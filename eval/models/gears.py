@@ -97,6 +97,8 @@ def run_eval(adata, cfg: dict) -> dict:
     -------
     dict with ``model``, ``metrics``, ``pert_names``, ``runtime_seconds``.
     """
+    import warnings
+    warnings.filterwarnings("ignore")
     import scanpy as sc
 
     t_start = time.time()
@@ -119,7 +121,8 @@ def run_eval(adata, cfg: dict) -> dict:
     logger.info("Loading Norman PertData + model ...")
     pert_data = PertData("./")
     pert_data.load(data_path=norman_data_path)
-    pert_data.prepare_split(split="no_test", seed=seed)
+    # Use seed=1 to match the pretrained Norman model's expected split
+    pert_data.prepare_split(split="no_test", seed=1)
     pert_data.get_dataloader(batch_size=32, test_batch_size=128)
 
     gears_model = GEARS(

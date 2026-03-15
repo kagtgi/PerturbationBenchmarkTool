@@ -76,6 +76,8 @@ def run_eval(adata, cfg: dict) -> dict:
     -------
     dict with ``model``, ``metrics``, ``pert_names``, ``runtime_seconds``.
     """
+    import warnings
+    warnings.filterwarnings("ignore")
     from sklearn.linear_model import LinearRegression
     from tqdm import tqdm
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
@@ -191,10 +193,10 @@ def run_eval(adata, cfg: dict) -> dict:
     adata.layers["X_true"] = adata.X.copy()
     pred_X_list = []
 
-    for row in adata.obs.itertuples():
+    for i, row in enumerate(adata.obs.itertuples()):
         cond = row.perturbation
         if cond == ctrl_label:
-            pred_X_list.append(adata.X[row.Index if isinstance(row.Index, int) else adata.obs.index.get_loc(row.Index)].copy())
+            pred_X_list.append(adata.X[i].copy())
             continue
         sentence = pred_sentences.get(cond, "")
         genes = [g.strip() for g in sentence.split() if g.strip() in vocab_set][:TOP_K_GENES]

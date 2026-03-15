@@ -168,8 +168,20 @@ def energy_distance(
     true_cells = _maybe_subsample(true_cells, max_cells, seed)
 
     d_pt = torch.cdist(pred_cells, true_cells, p=2.0).mean()
-    d_pp = torch.cdist(pred_cells, pred_cells, p=2.0).mean()
-    d_tt = torch.cdist(true_cells, true_cells, p=2.0).mean()
+    # Use off-diagonal means to exclude self-distance (=0)
+    n_p, n_t = pred_cells.size(0), true_cells.size(0)
+    dpp = torch.cdist(pred_cells, pred_cells, p=2.0)
+    dtt = torch.cdist(true_cells, true_cells, p=2.0)
+    if n_p > 1:
+        mask_pp = ~torch.eye(n_p, dtype=torch.bool, device=dpp.device)
+        d_pp = dpp[mask_pp].mean()
+    else:
+        d_pp = torch.tensor(0.0, device=dpp.device)
+    if n_t > 1:
+        mask_tt = ~torch.eye(n_t, dtype=torch.bool, device=dtt.device)
+        d_tt = dtt[mask_tt].mean()
+    else:
+        d_tt = torch.tensor(0.0, device=dtt.device)
     return max((2 * d_pt - d_pp - d_tt).item(), 0.0)
 
 
@@ -189,7 +201,10 @@ def mmd_rbf(
 
     with torch.no_grad():
         d_tt = torch.cdist(true_cells, true_cells)
-        sigma2 = d_tt.pow(2).median().clamp(1e-6).item() / 2.0
+        # Exclude diagonal (self-distances = 0) to avoid biasing the median
+        n_t = true_cells.size(0)
+        off_diag = ~torch.eye(n_t, dtype=torch.bool, device=d_tt.device)
+        sigma2 = d_tt.pow(2)[off_diag].median().clamp(1e-6).item() / 2.0
 
     def rbf(a, b):
         return torch.exp(-torch.cdist(a, b).pow(2) / (2 * sigma2))

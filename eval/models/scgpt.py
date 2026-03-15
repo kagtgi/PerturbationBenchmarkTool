@@ -198,6 +198,8 @@ def run_eval(adata, cfg: dict) -> dict:
     -------
     dict with ``model``, ``metrics``, ``pert_names``, ``runtime_seconds``.
     """
+    import warnings
+    warnings.filterwarnings("ignore")
     import scanpy as sc
     from tqdm import tqdm
 
