@@ -455,7 +455,7 @@ def run_eval(adata, cfg: dict) -> dict:
     true_delta = true_c - ctrl_t.unsqueeze(0)
 
     ca, pds = centroid_accuracy_and_pds(pred_c, true_c)
-    spd = systema_pearson_delta(pred_c, true_c)
+    spd = systema_pearson_delta(pred_delta, true_delta)
     da = directional_accuracy(pred_delta, true_delta)
     pde = pearson_delta_topk(pred_delta, true_delta)
     jac = jaccard_topk(pred_delta, true_delta)

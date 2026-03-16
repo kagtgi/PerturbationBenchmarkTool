@@ -20,8 +20,6 @@ import sys
 import time
 import types
 import urllib.request
-from collections import defaultdict
-
 import numpy as np
 import scipy.sparse as sp
 import torch
@@ -537,7 +535,6 @@ def run_eval(adata, cfg: dict) -> dict:
     warnings.filterwarnings("ignore")
     import pandas as pd
     import scanpy as sc
-    from scipy.spatial.distance import cdist
     from tqdm import tqdm
 
     t_start = time.time()
@@ -811,105 +808,34 @@ def run_eval(adata, cfg: dict) -> dict:
             "runtime_seconds": time.time() - t_start,
         }
 
-    # Build centroids
-    PC, TC, CN = [], [], []
-    for c in eval_perts:
+    # Build per-perturbation tensors (restricted to variable genes for
+    # numerical stability — constant-expression genes add noise to Pearson /
+    # distance metrics without contributing information).
+    pred_centroids_list, true_centroids_list = [], []
+    pred_cells_d, true_cells_d = {}, {}
+    CN = []
+
+    ctrl_real = torch.tensor(ctrl_mu[real_gene_idx], dtype=torch.float32)
+
+    for c in tqdm(eval_perts, desc="CPA build tensors", ncols=70):
         m = adata.obs["perturbation"] == c
-        xt = adata[m].layers["counts_log"][:, real_gene_idx]
-        xp = adata[m].layers["CPA_pred_log"][:, real_gene_idx]
-        PC.append(xp.mean(0))
-        TC.append(xt.mean(0))
+        xt = adata[m].layers["counts_log"][:, real_gene_idx].astype(np.float32)
+        xp = adata[m].layers["CPA_pred_log"][:, real_gene_idx].astype(np.float32)
+        pred_centroids_list.append(torch.tensor(xp.mean(0), dtype=torch.float32))
+        true_centroids_list.append(torch.tensor(xt.mean(0), dtype=torch.float32))
+        pred_cells_d[c] = torch.tensor(xp, dtype=torch.float32)
+        true_cells_d[c] = torch.tensor(xt, dtype=torch.float32)
         CN.append(c)
 
-    P = len(CN)
-    PM = np.stack(PC)
-    TM = np.stack(TC)
+    pred_c = torch.stack(pred_centroids_list)
+    true_c = torch.stack(true_centroids_list)
 
-    # Centroid Accuracy & PDS
-    D = np.linalg.norm(PM[:, None] - TM[None], axis=-1)
-    ca_v = (D.argmin(1) == np.arange(P)).astype(float)
-    d_self = D[np.arange(P), np.arange(P)]
-    off = ~np.eye(P, dtype=bool)
-    d_cross = (D * off).sum(1) / off.sum(1) if P > 1 else np.full(P, np.nan)
-    pds_v = d_self / (d_self + d_cross + 1e-8)
-
-    def _pearson(a, b):
-        if a.std() < 1e-8 or b.std() < 1e-8:
-            return np.nan
-        r = np.corrcoef(a, b)[0, 1]
-        return float(r) if not np.isnan(r) else np.nan
-
-    def _da(pm, tm, cm, thr=0.1):
-        dp, dt = pm - cm, tm - cm
-        mask = np.abs(dt) > thr
-        return float(np.mean(np.sign(dp[mask]) == np.sign(dt[mask]))) if mask.any() else np.nan
-
-    def _jaccard(pm, tm, cm, k=50):
-        pt = set(np.argsort(np.abs(pm - cm))[-k:].tolist())
-        tt = set(np.argsort(np.abs(tm - cm))[-k:].tolist())
-        u = pt | tt
-        return len(pt & tt) / len(u) if u else 0.0
-
-    def _energy(p, q, n=MAX_CELLS_SAMPLE):
-        r = np.random.default_rng(0)
-        if len(p) < 2 or len(q) < 2:
-            return np.nan
-        p = p[r.choice(len(p), min(n, len(p)), replace=False)].astype(np.float32)
-        q = q[r.choice(len(q), min(n, len(q)), replace=False)].astype(np.float32)
-        return max(float(
-            2 * cdist(p, q).mean() - cdist(p, p).mean() - cdist(q, q).mean()
-        ), 0.0)
-
-    def _mmd(p, q, n=MAX_CELLS_SAMPLE):
-        r = np.random.default_rng(0)
-        if len(p) < 2 or len(q) < 2:
-            return np.nan
-        p = p[r.choice(len(p), min(n, len(p)), replace=False)].astype(np.float32)
-        q = q[r.choice(len(q), min(n, len(q)), replace=False)].astype(np.float32)
-        dqq = cdist(q, q, "sqeuclidean")
-        off_d = dqq[~np.eye(len(q), dtype=bool)]
-        s2 = max(float(np.median(off_d)) / 2.0 if len(off_d) else 1.0, 1e-6)
-        Kpp = np.exp(-cdist(p, p, "sqeuclidean") / (2 * s2)).mean()
-        Kqq = np.exp(-dqq / (2 * s2)).mean()
-        Kpq = np.exp(-cdist(p, q, "sqeuclidean") / (2 * s2)).mean()
-        return max(float(Kpp - 2 * Kpq + Kqq), 0.0)
-
-    res: dict = defaultdict(list)
-    ctrl_real = ctrl_mu[real_gene_idx]
-    for i, c in enumerate(tqdm(CN, desc="CPA 3-tier", ncols=70)):
-        m = adata.obs["perturbation"] == c
-        xt = adata[m].layers["counts_log"][:, real_gene_idx]
-        xp = adata[m].layers["CPA_pred_log"][:, real_gene_idx]
-        dk = f"K562_{c}"
-        deg_list = adata.uns["rank_genes_groups_cov"].get(dk, [])
-        de = np.where(np.isin(adata.var_names[real_gene_idx], deg_list[:top_k]))[0]
-
-        pm, tm = xp.mean(0), xt.mean(0)
-        res["condition"].append(c)
-        res["T1_CA"].append(ca_v[i])
-        res["T1_PDS"].append(pds_v[i])
-        res["T1_PR"].append(_pearson(pm - ctrl_real, tm - ctrl_real))
-        res["T2_DA"].append(_da(pm, tm, ctrl_real))
-        res["T2_PRde"].append(
-            _pearson(pm[de] - ctrl_real[de], tm[de] - ctrl_real[de])
-            if len(de) > 0 else np.nan
-        )
-        res["T2_JC"].append(_jaccard(pm, tm, ctrl_real, top_k))
-        res["T3_EN"].append(_energy(xp, xt))
-        res["T3_MM"].append(_mmd(xp, xt))
-
-    df = pd.DataFrame(res)
-
-    metrics = {
-        "T1_Centroid_Accuracy": float(df["T1_CA"].mean()),
-        "T1_Profile_Distance_Score": float(df["T1_PDS"].mean()),
-        "T1_Systema_Pearson_Delta": float(df["T1_PR"].mean()),
-        "T2_Directional_Accuracy": float(df["T2_DA"].mean()),
-        "T2_Pearson_Delta_TopK": float(df["T2_PRde"].mean()),
-        "T2_Jaccard_TopK": float(df["T2_JC"].mean()),
-        "T3_Energy_Distance": float(df["T3_EN"].mean()),
-        "T3_MMD_RBF": float(df["T3_MM"].mean()),
-    }
+    metrics = compute_all_metrics(
+        pred_c, true_c, ctrl_real,
+        pred_cells_dict=pred_cells_d,
+        true_cells_dict=true_cells_d,
+        pert_names=CN,
+    )
 
     return {
         "model": "CPA",

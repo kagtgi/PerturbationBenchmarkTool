@@ -53,19 +53,20 @@ def centroid_accuracy_and_pds(
 
 
 def systema_pearson_delta(
-    pred_centroids: torch.Tensor,
-    true_centroids: torch.Tensor,
+    pred_delta: torch.Tensor,
+    true_delta: torch.Tensor,
 ) -> float:
-    """Genome-wide Pearson correlation of expression deltas re-centered by
-    the true mean across perturbations.
+    """Genome-wide Pearson correlation of expression deltas (pred − ctrl vs
+    true − ctrl), averaged over perturbations.
+
+    Inputs should already be deltas relative to the control centroid:
+        pred_delta = pred_centroids − ctrl_centroid
+        true_delta = true_centroids − ctrl_centroid
 
     Higher is better.
     """
-    origin = true_centroids.mean(dim=0, keepdim=True)
-    p = pred_centroids - origin
-    t = true_centroids - origin
-    p = p - p.mean(-1, keepdim=True)
-    t = t - t.mean(-1, keepdim=True)
+    p = pred_delta - pred_delta.mean(-1, keepdim=True)
+    t = true_delta - true_delta.mean(-1, keepdim=True)
     cov = (p * t).sum(-1)
     r = cov / (p.pow(2).sum(-1).clamp(1e-8).sqrt()
                * t.pow(2).sum(-1).clamp(1e-8).sqrt())
@@ -243,7 +244,7 @@ def compute_all_metrics(
 
     # Tier 1
     ca, pds = centroid_accuracy_and_pds(pred_centroids, true_centroids)
-    spd = systema_pearson_delta(pred_centroids, true_centroids)
+    spd = systema_pearson_delta(pred_delta, true_delta)
 
     # Tier 2
     da = directional_accuracy(pred_delta, true_delta)
