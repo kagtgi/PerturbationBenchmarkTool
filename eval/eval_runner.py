@@ -135,7 +135,7 @@ MODEL_TIMEOUT: dict[str, int] = {
     "gears":         20,
     "state":         25,
     "scgpt":         30,
-    "cell2sentence": 45,   # LLM 2B-parameter inference is the slowest step
+    "cell2sentence": 90,   # LLM 2B-parameter inference is the slowest step
     "cpa":           30,
 }
 
