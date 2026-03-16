@@ -248,7 +248,7 @@ if requirements:
         )
         if result_pip.returncode != 0:
             # Show stderr so the user can debug pip failures
-            # Use \\n so the generated script has a literal \n (not a raw newline)
+            # Use \\n so the generated script has a literal \\n (not a raw newline)
             logger.warning("Pre-install non-zero exit for {model_name}:\\n%s",
                            result_pip.stderr[-2000:])
         else:
