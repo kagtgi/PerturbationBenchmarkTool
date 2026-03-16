@@ -20,10 +20,8 @@ from pathlib import Path
 import numpy as np
 import scipy.sparse as sp
 import torch
-import torch.nn as nn
 
 from .. import config
-from ..metrics import compute_all_metrics
 
 logger = logging.getLogger(__name__)
 

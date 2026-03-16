@@ -15,12 +15,9 @@ import shutil
 import subprocess
 import sys
 import time
-from collections import defaultdict
 
 import numpy as np
-import scanpy as sc
 import torch
-from scipy.spatial.distance import cdist
 
 from .. import config
 from ..metrics import compute_all_metrics
@@ -77,6 +74,7 @@ def run_eval(adata, cfg: dict) -> dict:
     """
     import warnings
     warnings.filterwarnings("ignore")
+    import scanpy as sc
     from sklearn.linear_model import LinearRegression
     from tqdm import tqdm
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
