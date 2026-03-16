@@ -253,17 +253,26 @@ def run_eval(adata, cfg: dict) -> dict:
     # --- Preprocess h5ad ---------------------------------------------------
     rng = np.random.default_rng(seed)
 
-    # Auto-detect raw counts and normalize
-    X_check = adata.X[:1000]
-    if sp.issparse(X_check):
-        X_check = X_check.toarray()
-    looks_raw = bool(
-        np.nanmax(X_check) > 50
-        or np.array_equal(X_check, X_check.astype(int))
-    )
-    if looks_raw:
-        sc.pp.normalize_total(adata, target_sum=1e4)
-        sc.pp.log1p(adata)
+    # Normalize from raw counts.  layers["counts"] is set by ensure_raw_counts()
+    # and always holds the original integer counts.  Fall back to adata.X with
+    # auto-detection for the case where the data was loaded without the pipeline.
+    if "counts" in adata.layers:
+        adata.X = adata.layers["counts"].copy()
+    else:
+        X_check = adata.X[:1000]
+        if sp.issparse(X_check):
+            X_check = X_check.toarray()
+        looks_raw = bool(
+            np.nanmax(X_check) > 50
+            or np.array_equal(X_check, X_check.astype(int))
+        )
+        if not looks_raw:
+            logger.warning(
+                "scGPT: adata.X does not look like raw counts and "
+                "layers['counts'] is absent — normalization may be incorrect."
+            )
+    sc.pp.normalize_total(adata, target_sum=1e4)
+    sc.pp.log1p(adata)
 
     X_dense = (adata.X.toarray() if sp.issparse(adata.X) else np.asarray(adata.X)).astype(np.float32)
     ctrl_mask_obs = (adata.obs[pert_col] == ctrl_label).values

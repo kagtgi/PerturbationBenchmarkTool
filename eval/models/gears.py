@@ -267,8 +267,17 @@ def run_eval(adata, cfg: dict) -> dict:
 
     k562_genes = adata.var["gene_name"].tolist()
 
-    # Log-normalize control cells to match GEARS log1p-CPM prediction space
-    X_ctrl_raw     = adata[adata.obs["condition"] == "ctrl"].X.toarray()
+    # Log-normalize control cells to match GEARS log1p-CPM prediction space.
+    # Prefer layers["counts"] (raw integer counts) set by ensure_raw_counts();
+    # fall back to adata.X when evaluating outside the standard pipeline.
+    def _get_raw(sub_adata):
+        if "counts" in sub_adata.layers:
+            raw = sub_adata.layers["counts"]
+            return raw.toarray() if sp.issparse(raw) else np.asarray(raw, dtype=np.float32)
+        x = sub_adata.X
+        return x.toarray() if sp.issparse(x) else np.asarray(x, dtype=np.float32)
+
+    X_ctrl_raw     = _get_raw(adata[adata.obs["condition"] == "ctrl"])
     _lib           = X_ctrl_raw.sum(axis=1, keepdims=True)
     X_ctrl_ln      = np.log1p(X_ctrl_raw / (_lib + 1e-8) * 1e4)
     ctrl_mean_k562 = X_ctrl_ln.mean(axis=0)           # (n_k562_genes,)
@@ -313,7 +322,7 @@ def run_eval(adata, cfg: dict) -> dict:
             continue
 
         # Ground truth — log-normalize to match GEARS log1p CPM space
-        X_true_raw        = adata[mask].X.toarray()
+        X_true_raw        = _get_raw(adata[mask])
         _lib              = X_true_raw.sum(axis=1, keepdims=True)
         X_true            = np.log1p(X_true_raw / (_lib + 1e-8) * 1e4)
         true_mean_overlap = X_true.mean(axis=0)[k562_idx]
