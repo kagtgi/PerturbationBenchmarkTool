@@ -313,6 +313,12 @@ def run_eval(adata, cfg: dict) -> dict:
 
     ctrl_mean_eval = ctrl_X[:, eval_h5ad_idx].mean(axis=0).astype(np.float32)
 
+    # Narrow X_dense to only the eval columns now that eval_h5ad_idx is fixed.
+    # This drops (n_all_genes - n_eval) columns from the dense matrix, cutting
+    # RAM from (N × ~10 000) down to (N × 1 500) — roughly 90 % savings.
+    X_eval = X_dense[:, eval_h5ad_idx].copy()
+    del X_dense, ctrl_X
+
     # --- Build model -------------------------------------------------------
     cfg_path = Path(scgpt_dir) / "args.json"
     if cfg_path.exists():
@@ -350,8 +356,7 @@ def run_eval(adata, cfg: dict) -> dict:
     n_ctrl_total = int(ctrl_mask_obs.sum())
     n_ctrl_use = min(N_CTRL_CELLS, n_ctrl_total)
     ctrl_sample_idx = rng.choice(n_ctrl_total, size=n_ctrl_use, replace=False)
-    ctrl_eval_full = ctrl_X[:, eval_h5ad_idx]
-    ctrl_expr_used = ctrl_eval_full[ctrl_sample_idx]
+    ctrl_expr_used = X_eval[ctrl_mask_obs][ctrl_sample_idx]
 
     # --- Inference ---------------------------------------------------------
     @torch.no_grad()
@@ -395,7 +400,7 @@ def run_eval(adata, cfg: dict) -> dict:
             continue
 
         pred_cells = _run_pert(pert_pos)
-        true_cells = X_dense[pert_mask][:, eval_h5ad_idx]
+        true_cells = X_eval[pert_mask]
 
         pred_centroids.append(pred_cells.mean(axis=0))
         true_centroids.append(true_cells.mean(axis=0))

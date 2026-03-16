@@ -102,6 +102,7 @@ def run(
 
     logger.info("Stratified subsampling (%d%%) ...", int(config.SUBSAMPLE_FRAC * 100))
     adata_sub = stratified_subsample(adata)
+    del adata  # free full dataset; only the subsampled copy is needed from here
 
     results: list[dict] = []
     for model_name in models:

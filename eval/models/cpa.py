@@ -480,12 +480,14 @@ def run_eval(adata, cfg: dict) -> dict:
 
     # --- Normalize to log1p space ------------------------------------------
     true_raw = adata.layers["counts"]
-    lib_true = np.asarray(true_raw.sum(axis=1)).flatten()
+    # Convert sparse to dense before element-wise division; scipy sparse
+    # matrices don't support broadcasting division by a 2D array.
+    if sp.issparse(true_raw):
+        true_raw = true_raw.toarray()
+    true_raw = np.asarray(true_raw, dtype=np.float32)
+    lib_true = true_raw.sum(axis=1, keepdims=True)
     lib_true = np.maximum(lib_true, 1.0)
-    true_norm = (true_raw / lib_true[:, None]) * 1e4
-    if sp.issparse(true_norm):
-        true_norm = true_norm.toarray()
-    true_log = np.log1p(true_norm).astype(np.float32)
+    true_log = np.log1p((true_raw / lib_true) * 1e4)
 
     pred_raw = adata.layers["CPA_pred"]
     lib_pred = np.asarray(pred_raw.sum(axis=1)).flatten()
