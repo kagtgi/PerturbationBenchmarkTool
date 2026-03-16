@@ -199,7 +199,12 @@ def run_model_in_subprocess(
         Evaluation result with metrics, runtime, and status.
     """
     logger.info(f"🧬 Starting subprocess for: {model_name}")
-    
+
+    # Use absolute paths so the subprocess (which os.chdir to project_root)
+    # and the parent process always agree on file locations.
+    output_dir = str(Path(output_dir).resolve())
+    os.makedirs(output_dir, exist_ok=True)
+
     start_time = time.time()
     result_file = os.path.join(output_dir, f"{model_name}_results.json")
     log_file = os.path.join(output_dir, f"{model_name}_log.txt")
@@ -237,12 +242,17 @@ requirements = {json.dumps(requirements)}
 if requirements:
     logger.info(f"Pre-installing {{len(requirements)}} package(s) for {model_name} ...")
     try:
-        subprocess.check_call(
+        result_pip = subprocess.run(
             [sys.executable, "-m", "pip", "install", "-q"] + requirements,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            capture_output=True, text=True,
         )
-        logger.info("Pre-install done.")
+        if result_pip.returncode != 0:
+            # Show stderr so the user can debug pip failures
+            # Use \\n so the generated script has a literal \n (not a raw newline)
+            logger.warning("Pre-install non-zero exit for {model_name}:\\n%s",
+                           result_pip.stderr[-2000:])
+        else:
+            logger.info("Pre-install done.")
     except Exception as _e:
         # Non-fatal: each model's run_eval() installs its own deps anyway.
         logger.warning(f"Pre-install warning (non-fatal): {{_e}}")
@@ -524,6 +534,10 @@ def run(
     seed = seed if seed is not None else config.RANDOM_SEED
     output_dir = output_dir or config.OUTPUT_DIR
 
+    # Always use absolute paths so subprocesses (which chdir to project root)
+    # and the parent process agree on file locations regardless of CWD.
+    output_dir = str(Path(output_dir).resolve())
+    data_path = str(Path(data_path).resolve())
     os.makedirs(output_dir, exist_ok=True)
 
     # -----------------------------------------------------------------------
@@ -680,10 +694,22 @@ def run(
     
     # Save combined summary
     _save_summary(results, output_dir, summary_data)
-    
+
     # Print final report
     _print_final_report(summary_data)
-    
+
+    # If any models failed, automatically show their errors so the user
+    # doesn't have to hunt for log files manually.
+    failed = [s for s in summary_data if s["status"] not in ("success", "timeout")]
+    if failed:
+        print(f"\n{'='*70}")
+        print("🔍 AUTO-DIAGNOSE — error details for failed models:")
+        print(f"{'='*70}")
+        print_errors(output_dir)
+        print(f"\n💡 For full subprocess output run:  print_logs('{output_dir}')")
+        print(f"   Log files:  {output_dir}/<model>_log.txt")
+        print(f"{'='*70}\n")
+
     return results
 
 
