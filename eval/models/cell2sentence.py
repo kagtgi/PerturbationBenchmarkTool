@@ -26,7 +26,6 @@ from collections import defaultdict
 
 import numpy as np
 import pandas as pd
-import scanpy as sc
 import torch
 from scipy.spatial.distance import cdist
 from sklearn.linear_model import LinearRegression
@@ -34,7 +33,6 @@ from sklearn.linear_model import LinearRegression
 from tqdm import tqdm
 
 from .. import config
-from ..metrics import compute_all_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +43,6 @@ MAX_NEW_TOKENS = 600
 MAX_PERTURBATIONS = 200
 EVAL_SAMPLE_CELLS = 50
 MAX_EVAL_PERTS = 100
-MAX_CELLS_SAMPLE = 150
 
 
 def _pip(*packages: str) -> None:
