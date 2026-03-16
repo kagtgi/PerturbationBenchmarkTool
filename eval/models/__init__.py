@@ -25,6 +25,41 @@ _MODEL_MODULES: dict[str, str] = {
 
 AVAILABLE_MODELS: list[str] = sorted(_MODEL_MODULES.keys())
 
+# Per-model pip requirements used by eval_runner's subprocess installer.
+# Each model's run_eval() handles its own deps internally; this dict lets
+# the subprocess wrapper pre-install packages before any top-level import.
+MODEL_REQUIREMENTS: dict[str, list[str]] = {
+    "gears": [
+        "torch_geometric",
+        "cell-gears",
+        "scanpy",
+    ],
+    "state": [
+        "uv",
+        "huggingface_hub",
+    ],
+    "scgpt": [
+        "huggingface_hub",
+        "scanpy",
+        "anndata",
+    ],
+    "cell2sentence": [
+        "transformers>=4.45.0",
+        "accelerate>=0.34.0",
+        "bitsandbytes>=0.43.0",
+        "cell2sentence==1.1.0",
+    ],
+    "cpa": [
+        "anndata>=0.10.0,<0.13.0",
+        "scanpy>=1.10.0,<1.11.0",
+        "scvi-tools>=1.0.0,<1.5.0",
+        "lightning>=2.2.0,<2.4.0",
+        "pytorch-lightning>=2.2.0,<2.4.0",
+        "gdown",
+        "pybiomart",
+    ],
+}
+
 
 def get_model_module(name: str) -> "ModuleType":
     """Import and return the model module by name."""

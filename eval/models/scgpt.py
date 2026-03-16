@@ -144,8 +144,24 @@ def _pip_uninstall(*pkgs: str) -> None:
 
 
 def _install_dependencies() -> None:
-    """Install scGPT and remove torchtext."""
-    _pip("git+https://github.com/bowang-lab/scGPT.git", quiet=False)
+    """Install scGPT and remove torchtext.
+
+    scGPT is installed from the git HEAD on first call.  On subsequent calls
+    the existing installation is reused — avoids a 60-second pip round-trip
+    every time run_eval() is invoked.
+
+    torchtext is always uninstalled (or already absent) because its compiled
+    .so extension is ABI-locked to an older torch and raises
+    "undefined symbol" on torch >= 2.4.  The torchtext stub is injected
+    instead so scGPT's ``from torchtext.vocab import Vocab`` succeeds.
+    """
+    try:
+        import scgpt  # noqa: F401
+        logger.info("scGPT: already installed, skipping git install")
+    except ImportError:
+        logger.info("Installing scGPT from git HEAD ...")
+        _pip("git+https://github.com/bowang-lab/scGPT.git", quiet=False)
+
     _pip("huggingface_hub", "scanpy", "anndata")
     _pip_uninstall("torchtext")
     _inject_torchtext_stub()

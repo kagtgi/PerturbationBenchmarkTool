@@ -48,26 +48,6 @@ MAX_EVAL_PERTS = 100
 MAX_CELLS_SAMPLE = 150
 
 
-def _agent_log(*, run_id: str, hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    # #region agent log
-    try:
-        import json
-        payload = {
-            "sessionId": "9abc55",
-            "runId": run_id,
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        with open("debug-9abc55.log", "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-    # #endregion
-
-
 def _pip(*packages: str) -> None:
     """Install packages with --upgrade flag (matching reference script)."""
     subprocess.check_call(
@@ -194,17 +174,8 @@ def run_eval(adata, cfg: dict) -> dict:
     pert_col = cfg.get("PERT_COL", config.PERT_COL)
     top_k_de = cfg.get("TOP_K_DE", 50)
 
-    _agent_log(
-        run_id="c2s-eval",
-        hypothesis_id="H1",
-        location="eval/models/cell2sentence.py:run_eval(entry)",
-        message="enter run_eval",
-        data={
-            "python": sys.version.split()[0],
-            "cuda_available": bool(torch.cuda.is_available()),
-            "hf_model": HF_MODEL,
-        },
-    )
+    logger.info("Cell2Sentence eval starting (python=%s cuda=%s model=%s)",
+                sys.version.split()[0], torch.cuda.is_available(), HF_MODEL)
 
     # Install dependencies (reference-style with version check)
     _install_dependencies()
