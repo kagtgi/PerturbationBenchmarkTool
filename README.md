@@ -140,3 +140,40 @@ results = run(
 for r in results:
     print(f"{r['model']}: CA={r['metrics']['T1_Centroid_Accuracy']:.4f}")
 ```
+
+## Debugging Failed Runs
+
+If one or more models fail, the runner prints errors automatically. You can also inspect them manually:
+
+```python
+from eval.eval_runner import print_errors, print_logs
+
+# Show error message + traceback for each failed model
+print_errors()                 # default output_dir from config
+print_errors("my_results/")   # explicit path
+
+# Show full subprocess output (stdout + stderr, streamed line-by-line)
+print_logs()                   # all models
+print_logs(model="gears")      # single model
+```
+
+Log files are saved to `{output_dir}/{model_name}_log.txt`.
+Result JSON (including traceback) to `{output_dir}/{model_name}_results.json`.
+
+### Common Issues
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| All models fail in < 5 seconds | Python path misconfiguration | Run from the repo root directory |
+| `ModuleNotFoundError: No module named 'eval'` | Not running from project root | `cd PerturbationBenchmarkTool` before running |
+| `CUDA not available` for Cell2Sentence | Cell2Sentence requires GPU | Use a CUDA-enabled machine or skip `cell2sentence` |
+| `No results file generated` | Subprocess crashed at import | Check `{model}_log.txt` for the stack trace |
+| `Gene overlap = 0` for CPA | Control label mismatch | Ensure `CTRL_LABEL` in `config.py` matches your data |
+
+## Requirements
+
+- Python ≥ 3.10
+- PyTorch (any recent version)
+- CUDA GPU recommended (required for Cell2Sentence)
+- Internet access (models download pretrained weights on first run)
+- ~20 GB disk space for all model checkpoints
