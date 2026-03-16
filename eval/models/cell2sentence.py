@@ -40,10 +40,10 @@ C2S_DIR = "/tmp/vandijklab_c2s"
 HF_MODEL = "vandijklab/C2S-Scale-Gemma-2-2B"
 TOP_K_GENES = 200
 MAX_NEW_TOKENS = 600
-MAX_PERTURBATIONS = 200
-EVAL_SAMPLE_CELLS = 50
-MAX_EVAL_PERTS = 100
-MAX_CELLS_SAMPLE = 512   # max cells per pert for T3 distance metrics
+MAX_PERTURBATIONS = 100   # reduced from 200 for faster eval
+EVAL_SAMPLE_CELLS = 25    # reduced from 50 for faster eval
+MAX_EVAL_PERTS = 50       # reduced from 100 for faster eval
+MAX_CELLS_SAMPLE = 256    # reduced from 512 for faster eval
 
 
 def _pip(*packages: str) -> None:

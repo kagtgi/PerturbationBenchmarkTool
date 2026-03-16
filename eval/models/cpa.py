@@ -146,7 +146,7 @@ def _install_jax_stub() -> None:
     class _JaxStub(types.ModuleType):
         """Stub module that satisfies JAX/FLAX imports without real JAX."""
 
-        def __init__(self, name: str):
+        def __init__(self, name: str, *args, **kwargs):
             super().__init__(name)
             object.__setattr__(self, "_attrs", {})
 
@@ -277,7 +277,30 @@ def _patch_scvi() -> None:
         )
         with open(base_module_path, "w") as f:
             f.write(bm_content)
-        logger.info("  ✅ Patched _base_module.py")
+        logger.info("  ✅ Patched nn/_base_module.py")
+
+    # --- module/base/_base_module.py — remove JAX/FLAX class definitions ---
+    mod_base_path = os.path.join(scvi_path, "module", "base", "_base_module.py")
+    if os.path.exists(mod_base_path):
+        with open(mod_base_path) as f:
+            mb_content = f.read()
+        # Comment out JAX/FLAX imports
+        mb_content = re.sub(
+            r"^(from jax\b.*|import jax\b.*|from flax\b.*|import flax\b.*)$",
+            r"# \1  # jax stub active",
+            mb_content,
+            flags=re.MULTILINE,
+        )
+        # Replace JaxBaseModuleClass with a simple placeholder
+        mb_content = re.sub(
+            r"^class JaxBaseModuleClass\(flax\.linen\.Module\):.*",
+            "class JaxBaseModuleClass:  # stubbed — no real JAX",
+            mb_content,
+            flags=re.MULTILINE,
+        )
+        with open(mod_base_path, "w") as f:
+            f.write(mb_content)
+        logger.info("  ✅ Patched module/base/_base_module.py")
 
     logger.info("✅ scvi-tools patching complete")
 
