@@ -58,7 +58,16 @@ def _install_dependencies() -> None:
     subprocess.check_call(["git", "clone", "-q",
                            "https://github.com/theislab/cpa.git", CPA_DIR])
 
+    # Capture current versions BEFORE any pip operations so we can restore
+    # them afterwards.  numba and scvi-tools transitively upgrade scipy; the
+    # new scipy wheel's Cython extensions (_upfirdn_apply.pyx) may be compiled
+    # against a different _cyutility API than what's on disk, causing
+    # "does not export expected C function __Pyx__Import" on re-import.
     NP_VER = np.__version__
+    import scipy as _sc_snap
+    SC_VER = _sc_snap.__version__
+    del _sc_snap
+
     _pip("anndata>=0.10.0,<0.13.0")
     _pip(f"numpy=={NP_VER}")
     _pip("numba>=0.60.0")
@@ -70,12 +79,15 @@ def _install_dependencies() -> None:
     _pip_no_upgrade("scikit-learn")
     _pip("rdkit", "adjustText", "seaborn")
     _pip("pybiomart")
+    # Restore scipy to the pre-install version to avoid any ABI mismatch
+    # introduced by the installs above.
+    _pip(f"scipy=={SC_VER}")
 
 
 def _clear_module_cache() -> None:
     """Remove stale modules from sys.modules."""
     CLEAR = ["anndata", "scvi", "scanpy", "cpa", "lightning", "jax", "flax",
-             "pytorch_lightning", "torchmetrics", "numba"]
+             "pytorch_lightning", "torchmetrics", "numba", "scipy"]
     for k in list(sys.modules):
         if any(k == m or k.startswith(m + ".") for m in CLEAR):
             sys.modules.pop(k, None)

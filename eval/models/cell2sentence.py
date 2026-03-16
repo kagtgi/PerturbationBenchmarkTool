@@ -53,13 +53,12 @@ def _install_dependencies() -> None:
     if C2S_DIR not in sys.path:
         sys.path.insert(0, C2S_DIR)
 
-    try:
-        import transformers  # noqa: F401
-        import bitsandbytes  # noqa: F401
-    except ImportError:
-        _pip("transformers>=4.45.0", "accelerate>=0.34.0", "bitsandbytes>=0.43.0")
-        _pip("cell2sentence==1.1.0", "anndata>=0.10.0", "scanpy>=1.10.0")
-        _pip("scikit-learn", "pandas", "scipy", "tqdm")
+    # Always upgrade — checking importability is not enough.  FourOverSixConfig
+    # was added in transformers 4.50; older versions import fine but fail later
+    # inside AutoModelForCausalLM.from_pretrained when loading Gemma-2.
+    _pip("transformers>=4.50.0", "accelerate>=0.34.0", "bitsandbytes>=0.43.0")
+    _pip("cell2sentence==1.1.0", "anndata>=0.10.0", "scanpy>=1.10.0")
+    _pip("scikit-learn", "pandas", "scipy", "tqdm")
 
 
 def run_eval(adata, cfg: dict) -> dict:

@@ -59,7 +59,7 @@ def stratified_subsample(
     rng = np.random.default_rng(seed)
     keep_idx: list[str] = []
 
-    for _label, grp in adata.obs.groupby(pert_col):
+    for _label, grp in adata.obs.groupby(pert_col, observed=True):
         n = max(2, int(len(grp) * frac))
         n = min(n, len(grp))
         keep_idx.extend(
