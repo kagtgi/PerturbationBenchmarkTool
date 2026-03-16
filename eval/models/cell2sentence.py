@@ -112,7 +112,11 @@ def run_eval(adata, cfg: dict) -> dict:
 
     # DEGs
     adata_log = adata.copy()
-    sc.pp.log1p(adata_log)
+    # Apply log1p directly to the matrix rather than via sc.pp.log1p to avoid
+    # singledispatch failures caused by sys.path manipulation in
+    # _install_dependencies (inserting C2S_DIR at front can shadow anndata,
+    # so AnnData is no longer the registered type in scanpy's dispatch table).
+    adata_log.X = np.log1p(adata_log.X)
     sc.tl.rank_genes_groups(
         adata_log, groupby=pert_key, reference=ctrl_label,
         method="t-test", n_genes=adata.n_vars,
@@ -191,23 +195,25 @@ def run_eval(adata, cfg: dict) -> dict:
     vocab_list = list(adata.var_names)
     vocab_set = set(vocab_list)
     adata.layers["X_true"] = adata.X.copy()
-    pred_X_list = []
+    # Pre-allocate the prediction matrix to avoid building a Python list of
+    # n_cells arrays and then calling np.array() on it (which doubles peak RAM).
+    pred_X = np.zeros((adata.n_obs, adata.n_vars), dtype=np.float32)
 
     for i, row in enumerate(adata.obs.itertuples()):
         cond = row.perturbation
         if cond == ctrl_label:
-            pred_X_list.append(adata.X[i].copy())
+            pred_X[i] = adata.X[i]
             continue
         sentence = pred_sentences.get(cond, "")
         genes = [g.strip() for g in sentence.split() if g.strip() in vocab_set][:TOP_K_GENES]
-        expr = np.zeros(adata.n_vars)
+        expr = np.zeros(adata.n_vars, dtype=np.float32)
         for rank, gene in enumerate(genes):
             idx = vocab_list.index(gene)
             expr[idx] = 10 ** (slope * np.log10(1 + rank) + intercept)
-        expr += rng.normal(0, 1e-6, size=expr.shape)
-        pred_X_list.append(expr)
+        expr += rng.normal(0, 1e-6, size=expr.shape).astype(np.float32)
+        pred_X[i] = expr
 
-    adata.layers["C2S_pred"] = np.array(pred_X_list)
+    adata.layers["C2S_pred"] = pred_X
 
     # --- Metrics -----------------------------------------------------------
     ctrl_mu = adata[ctrl_mask].X.mean(axis=0).flatten()
