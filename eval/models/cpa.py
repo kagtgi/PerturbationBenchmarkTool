@@ -60,7 +60,6 @@ MODEL_DIR = "./pretrained_cpa_k562"
 KANG_MODEL_ID = "1IVDsxkCZZlU5MCyiu0MKyAwzeEd_yV4B"
 
 MAX_EVAL_PERTS = 100
-MAX_CELLS_SAMPLE = 150
 TOP_K_DE = 50
 SUBSAMPLE_FRAC = 0.20
 MIN_CELLS_PER_PERT = 5
@@ -629,8 +628,22 @@ def run_eval(adata, cfg: dict) -> dict:
     ckpt_var_names = ckpt["ckpt_var_names"]
 
     # --- Prepare adata -----------------------------------------------------
+    adata = adata.copy()
+
     if "perturbation" not in adata.obs.columns:
         adata.obs["perturbation"] = adata.obs[pert_col].astype(str)
+
+    # The Kang K562 checkpoint was trained with "ctrl" as control label.
+    # Global config uses "non-targeting" — rename to "ctrl" for CPA only.
+    # This mirrors the notebook (cell 12, STEP 10):
+    #   adata.obs["perturbation"].str.replace(CTRL_LABEL, "ctrl", ...)
+    #   CTRL_LABEL = "ctrl"
+    orig_ctrl = ctrl_label          # e.g. "non-targeting" from config
+    adata.obs["perturbation"] = (
+        adata.obs["perturbation"].astype(str)
+             .str.replace(orig_ctrl, "ctrl", regex=False)
+    )
+    ctrl_label = "ctrl"             # CPA always uses "ctrl" internally
 
     if "cell_type" not in adata.obs.columns:
         adata.obs["cell_type"] = "K562"

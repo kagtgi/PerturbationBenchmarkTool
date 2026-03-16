@@ -51,47 +51,92 @@ logger = logging.getLogger(__name__)
 # MODEL-SPECIFIC CONFIGURATIONS
 # =============================================================================
 
-# Define requirements for each model (prevents version conflicts)
-DEFAULT_MODEL_REQUIREMENTS = {
+# Accurate pre-install requirements for each model, derived directly from
+# Eval_.ipynb (cells 3, 6, 8, 10, 12).  These are the packages installed
+# by each notebook cell *before* the model's own run_eval() is invoked.
+# Each model's _install_dependencies() handles the full install at runtime;
+# this list lets the subprocess wrapper pre-seed the heaviest packages so
+# the first import succeeds quickly.
+#
+# Values from eval.models.MODEL_REQUIREMENTS (models/__init__.py) override
+# these defaults — keep them in sync.
+DEFAULT_MODEL_REQUIREMENTS: dict[str, list[str]] = {
+    # Notebook cell 3: pip("torch_geometric"); pip("cell-gears", "scanpy")
+    "gears": [
+        "torch_geometric",
+        "cell-gears",
+        "scanpy",
+    ],
+    # Notebook cell 6: pip("uv", "huggingface_hub"); uv tool install arc-state
+    "state": [
+        "uv",
+        "huggingface_hub",
+    ],
+    # Notebook cell 8: pip(scGPT git HEAD); pip("huggingface_hub","scanpy","anndata")
+    # NOTE: scGPT is NOT on PyPI as a stable release — installed from git HEAD
+    # inside run_eval().  Pre-installing aux deps only here.
+    "scgpt": [
+        "huggingface_hub",
+        "scanpy",
+        "anndata",
+    ],
+    # Notebook cell 10: pip("transformers>=4.45.0","accelerate>=0.34.0","bitsandbytes>=0.43.0")
+    #                   pip("cell2sentence==1.1.0","anndata>=0.10.0","scanpy>=1.10.0")
     "cell2sentence": [
         "transformers>=4.45.0",
         "accelerate>=0.34.0",
         "bitsandbytes>=0.43.0",
         "cell2sentence==1.1.0",
     ],
-    "scgpt": [
-        "scgpt==0.1.2",
-        "transformers>=4.45.0",
-        "anndata>=0.10.0",
-    ],
+    # Notebook cell 12: pip("anndata>=0.10.0,<0.13.0"); pip("scanpy>=1.10.0,<1.11.0");
+    #                   pip("scvi-tools>=1.0.0,<1.5.0"); pip("lightning>=2.2.0,<2.4.0");
+    #                   pip("pytorch-lightning>=2.2.0,<2.4.0"); pip("gdown"); pip("pybiomart")
     "cpa": [
-        "scvi-tools==1.0.0",
-        "pyro-ppl==1.8.4",
-        "anndata>=0.10.0",
-        "scanpy>=1.10.0",
-    ],
-    "gears": [
-        "torch>=2.0.0",
-        "anndata>=0.10.0",
-        "scanpy>=1.10.0",
-    ],
-    "scgen": [
-        "scgen==2.1.0",
-        "anndata>=0.10.0",
-        "scanpy>=1.10.0",
+        "anndata>=0.10.0,<0.13.0",
+        "scanpy>=1.10.0,<1.11.0",
+        "scvi-tools>=1.0.0,<1.5.0",
+        "lightning>=2.2.0,<2.4.0",
+        "pytorch-lightning>=2.2.0,<2.4.0",
+        "gdown",
+        "pybiomart",
     ],
 }
 
-# Merge with any model-specific overrides
+# Merge: models/__init__.py values win (they are also derived from the notebook)
 MODEL_REQUIREMENTS = {**DEFAULT_MODEL_REQUIREMENTS, **MODEL_REQUIREMENTS}
 
-# Timeout per model (minutes)
-MODEL_TIMEOUT = {
-    "cell2sentence": 30,
-    "scgpt": 30,
-    "cpa": 30,
-    "gears": 20,
-    "scgen": 20,
+# ---------------------------------------------------------------------------
+# Known library conflicts — relevant ONLY for non-isolated (--no-isolate) mode.
+# In subprocess isolation mode (default) every model runs in its own Python
+# process, so conflicts are automatically avoided.
+# ---------------------------------------------------------------------------
+KNOWN_CONFLICTS: dict[tuple[str, str], str] = {
+    # STATE: arc-state install evicts scipy/scanpy/anndata from sys.modules
+    ("state", "gears"):         "arc-state install evicts scipy/scanpy/anndata from sys.modules",
+    ("state", "scgpt"):         "arc-state install evicts scipy/scanpy/anndata from sys.modules",
+    ("state", "cell2sentence"): "arc-state install evicts scipy/scanpy/anndata from sys.modules",
+    ("state", "cpa"):           "arc-state install evicts scipy/scanpy/anndata from sys.modules",
+    # GEARS ↔ CPA: torch_geometric vs. scvi-tools anndata version pin (<0.13.0)
+    ("gears", "cpa"):           "torch_geometric conflicts with scvi-tools anndata<0.13.0 pin",
+    # scGPT ↔ C2S: scGPT torchtext stub may conflict with C2S transformers
+    ("scgpt", "cell2sentence"): "scGPT uses torchtext stub; C2S needs transformers>=4.45.0",
+}
+
+# Safe run order for non-isolated (in-process) mode:
+#   1. GEARS  — minimal deps; no sys.modules side-effects
+#   2. scGPT  — injects torchtext stub (harmless for subsequent models)
+#   3. C2S    — upgrades transformers; OK after scGPT
+#   4. CPA    — pins anndata/scanpy; clears its own module cache internally
+#   5. STATE  — MUST be last: arc-state evicts scipy/anndata/scanpy on install
+SAFE_RUN_ORDER: list[str] = ["gears", "scgpt", "cell2sentence", "cpa", "state"]
+
+# Timeout per model in minutes
+MODEL_TIMEOUT: dict[str, int] = {
+    "gears":         20,
+    "state":         25,
+    "scgpt":         30,
+    "cell2sentence": 45,   # LLM 2B-parameter inference is the slowest step
+    "cpa":           30,
 }
 
 
@@ -164,53 +209,38 @@ def run_model_in_subprocess(
     
     # Create isolated runner script
     runner_script = f'''
-import sys
-import os
-import warnings
-import json
-import time
-import logging
-
+import sys, os, warnings, json, time, logging, subprocess
 warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-# =============================================================================
-# STEP 1: Install model-specific dependencies FIRST
-# =============================================================================
+# ---------------------------------------------------------------------------
+# STEP 1 — Pre-install model-specific packages in a single pip call.
+#
+# We do NOT use __import__ to skip "already installed" packages because
+# pip-package names != Python module names for several deps:
+#   scvi-tools  -> module: scvi       (not scvi_tools)
+#   cell-gears  -> module: gears      (not cell_gears)
+# Passing a version-ranged spec to pip is idempotent: pip exits immediately
+# if the constraint is already satisfied, so there is no performance penalty.
+# ---------------------------------------------------------------------------
 requirements = {json.dumps(requirements)}
-installed = []
-
-for pkg in requirements:
-    pkg_name = pkg.split("==")[0].split(">=")[0].split("<=")[0]
+if requirements:
+    logger.info(f"Pre-installing {{len(requirements)}} package(s) for {model_name} ...")
     try:
-        __import__(pkg_name.replace("-", "_"))
-        logger.info(f"✅ Already installed: {{pkg_name}}")
-    except ImportError:
-        logger.info(f"📦 Installing: {{pkg}}")
-        import subprocess
-        try:
-            subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "-q", "--upgrade", pkg],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            installed.append(pkg)
-            logger.info(f"✅ Installed: {{pkg}}")
-        except Exception as e:
-            logger.warning(f"⚠️  Failed to install {{pkg}}: {{e}}")
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "-q"] + requirements,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        logger.info("Pre-install done.")
+    except Exception as _e:
+        # Non-fatal: each model's run_eval() installs its own deps anyway.
+        logger.warning(f"Pre-install warning (non-fatal): {{_e}}")
 
-# Force reload of any cached modules
-if installed:
-    logger.info("🔄 Restarting imports after package installation...")
-    import importlib
-    for mod in list(sys.modules.keys()):
-        if mod not in ["sys", "os", "json", "time", "logging", "warnings"]:
-            del sys.modules[mod]
-
-# =============================================================================
-# STEP 2: Run model evaluation
-# =============================================================================
+# ---------------------------------------------------------------------------
+# STEP 2 — Run model evaluation
+# ---------------------------------------------------------------------------
 start = time.time()
 result = {{
     "model": "{model_name}",
@@ -223,35 +253,29 @@ result = {{
 try:
     import scanpy as sc
     from eval.models import run_model_eval
-    
-    # Load data
-    logger.info(f"📁 Loading data: {data_path}")
+
+    logger.info("Loading data: {data_path}")
     adata = sc.read_h5ad("{data_path}")
-    
-    # Load config
+
     cfg = {json.dumps(cfg)}
-    
-    # Run evaluation
-    logger.info(f"🚀 Running evaluation for: {model_name}")
+
+    logger.info("Running {model_name} evaluation ...")
     result = run_model_eval("{model_name}", adata, cfg)
     result["status"] = "success"
-    
+
 except Exception as e:
     import traceback
     result["status"] = "failed"
     result["error"] = str(e)
     result["traceback"] = traceback.format_exc()
-    logger.error(f"❌ Evaluation failed: {{e}}")
+    logger.error(f"Evaluation failed: {{e}}")
     logger.error(traceback.format_exc())
 
 finally:
     result["runtime_seconds"] = time.time() - start
-    
-    # Save results
     with open("{result_file}", "w") as f:
         json.dump(result, f, indent=2, default=str)
-    
-    logger.info(f"✅ {{'{model_name}'}} completed in {{result['runtime_seconds']:.2f}}s")
+    logger.info(f"{model_name} completed in {{result['runtime_seconds']:.2f}}s")
 '''
     
     # Write temporary runner script
@@ -404,13 +428,43 @@ def run(
         List of result dicts, one per model.
     """
     data_path = data_path or config.DATA_PATH
-    models = models or AVAILABLE_MODELS
+    models = list(models or AVAILABLE_MODELS)
     device = device or config.DEVICE
     seed = seed if seed is not None else config.RANDOM_SEED
     output_dir = output_dir or config.OUTPUT_DIR
-    
+
     os.makedirs(output_dir, exist_ok=True)
-    
+
+    # -----------------------------------------------------------------------
+    # Non-isolated mode: enforce safe run order and warn about conflicts.
+    # In subprocess isolation mode every model runs in its own Python process
+    # so conflicts are automatically avoided — no reordering needed.
+    # -----------------------------------------------------------------------
+    if not isolate:
+        # Reorder models to match SAFE_RUN_ORDER
+        ordered = [m for m in SAFE_RUN_ORDER if m in models]
+        ordered += [m for m in models if m not in SAFE_RUN_ORDER]
+        if ordered != models:
+            logger.warning(
+                "Non-isolated mode: reordering models to safe execution order: %s",
+                " → ".join(ordered),
+            )
+        models = ordered
+
+        # Warn about known conflicts
+        active = set(models)
+        conflicts_found = []
+        for (a, b), reason in KNOWN_CONFLICTS.items():
+            if a in active and b in active:
+                conflicts_found.append(f"  {a} ↔ {b}: {reason}")
+        if conflicts_found:
+            logger.warning(
+                "⚠️  Non-isolated mode with conflicting models detected!\n"
+                "   Use --isolate (default) to avoid these conflicts.\n"
+                "   Detected conflicts:\n%s",
+                "\n".join(conflicts_found),
+            )
+
     # Log configuration
     logger.info("=" * 70)
     logger.info("🚀 PERTURBATION BENCHMARK - EVALUATION RUNNER")
@@ -462,6 +516,9 @@ def run(
                         "CTRL_LABEL": config.CTRL_LABEL,
                         "PERT_COL": config.PERT_COL,
                         "TOP_K_DE": config.TOP_K_DE,
+                        "MAX_T3_CELLS": config.MAX_T3_CELLS,
+                        "MIN_CELLS_PER_PERT": config.MIN_CELLS_PER_PERT,
+                        "DIR_ACC_THRESHOLD": config.DIR_ACC_THRESHOLD,
                         "OUTPUT_DIR": output_dir,
                     },
                     output_dir=output_dir,
@@ -479,6 +536,9 @@ def run(
                         "CTRL_LABEL": config.CTRL_LABEL,
                         "PERT_COL": config.PERT_COL,
                         "TOP_K_DE": config.TOP_K_DE,
+                        "MAX_T3_CELLS": config.MAX_T3_CELLS,
+                        "MIN_CELLS_PER_PERT": config.MIN_CELLS_PER_PERT,
+                        "DIR_ACC_THRESHOLD": config.DIR_ACC_THRESHOLD,
                         "OUTPUT_DIR": output_dir,
                     },
                     output_dir=output_dir,

@@ -36,9 +36,18 @@ def load_h5ad(path: str | None = None) -> sc.AnnData:
 
 
 def ensure_raw_counts(adata: sc.AnnData) -> sc.AnnData:
-    """Store raw counts in ``adata.layers['counts']`` if not present."""
+    """Store raw counts in ``adata.layers['counts']`` and reset ``adata.X``.
+
+    If ``layers['counts']`` is absent, the current ``adata.X`` is assumed to
+    hold raw integer counts and is copied there.  In all cases ``adata.X`` is
+    reset to equal ``layers['counts']`` so that every model which reads
+    ``adata.X`` directly (GEARS, scGPT auto-detect, C2S X_true capture) always
+    receives raw counts and can safely apply its own normalization.
+    """
     if "counts" not in adata.layers:
         adata.layers["counts"] = adata.X.copy()
+    # Always expose raw counts through adata.X for consistent downstream access.
+    adata.X = adata.layers["counts"].copy()
     return adata
 
 

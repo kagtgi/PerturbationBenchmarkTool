@@ -26,15 +26,13 @@ from collections import defaultdict
 
 import numpy as np
 import pandas as pd
-import scanpy as sc
 import torch
 from scipy.spatial.distance import cdist
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score
+
 from tqdm import tqdm
 
 from .. import config
-from ..metrics import compute_all_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -45,27 +43,6 @@ MAX_NEW_TOKENS = 600
 MAX_PERTURBATIONS = 200
 EVAL_SAMPLE_CELLS = 50
 MAX_EVAL_PERTS = 100
-MAX_CELLS_SAMPLE = 150
-
-
-def _agent_log(*, run_id: str, hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    # #region agent log
-    try:
-        import json
-        payload = {
-            "sessionId": "9abc55",
-            "runId": run_id,
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        with open("debug-9abc55.log", "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-    # #endregion
 
 
 def _pip(*packages: str) -> None:
@@ -102,16 +79,6 @@ def _install_dependencies() -> None:
         _pip("transformers>=4.45.0", "accelerate>=0.34.0", "bitsandbytes>=0.43.0")
         _pip("cell2sentence==1.1.0", "anndata>=0.10.0", "scanpy>=1.10.0")
         _pip("scikit-learn", "pandas", "scipy", "tqdm")
-
-
-def _safe_r2(y_true, y_pred):
-    """Safe R² computation with error handling."""
-    if len(y_true) < 2:
-        return np.nan
-    try:
-        return float(r2_score(y_true, y_pred))
-    except (ValueError, TypeError):
-        return np.nan
 
 
 def _pearson(a, b):
@@ -193,18 +160,10 @@ def run_eval(adata, cfg: dict) -> dict:
     ctrl_label = cfg.get("CTRL_LABEL", config.CTRL_LABEL)
     pert_col = cfg.get("PERT_COL", config.PERT_COL)
     top_k_de = cfg.get("TOP_K_DE", 50)
+    max_t3 = cfg.get("MAX_T3_CELLS", config.MAX_T3_CELLS)
 
-    _agent_log(
-        run_id="c2s-eval",
-        hypothesis_id="H1",
-        location="eval/models/cell2sentence.py:run_eval(entry)",
-        message="enter run_eval",
-        data={
-            "python": sys.version.split()[0],
-            "cuda_available": bool(torch.cuda.is_available()),
-            "hf_model": HF_MODEL,
-        },
-    )
+    logger.info("Cell2Sentence eval starting (python=%s cuda=%s model=%s)",
+                sys.version.split()[0], torch.cuda.is_available(), HF_MODEL)
 
     # Install dependencies (reference-style with version check)
     _install_dependencies()
@@ -259,19 +218,6 @@ def run_eval(adata, cfg: dict) -> dict:
     # Dense conversion
     if hasattr(adata.X, "toarray"):
         adata.X = adata.X.toarray()
-
-    # DEGs with proper normalization
-    adata_log = adata.copy()
-    sc.pp.log1p(adata_log)
-    sc.tl.rank_genes_groups(
-        adata_log, groupby=pert_key, reference=ctrl_label,
-        method="t-test", n_genes=adata.n_vars,
-    )
-    rgg = adata_log.uns["rank_genes_groups"]
-    adata.uns["rank_genes_groups_cov"] = {
-        f"K562_{g}": list(rgg["names"][g])
-        for g in rgg["names"].dtype.names if g != ctrl_label
-    }
 
     # --- Load model --------------------------------------------------------
     logger.info("Loading C2S-Scale-Gemma-2-2B (4-bit) ...")
@@ -413,9 +359,7 @@ def run_eval(adata, cfg: dict) -> dict:
     logger.info("  Computing 3-tier metrics (CPA-aligned)...")
     eval_start = time.time()
 
-    _eval = [c for c in adata.obs[pert_key].unique()
-             if c != ctrl_label
-             and f"K562_{c}" in adata.uns.get("rank_genes_groups_cov", {})]
+    _eval = [c for c in adata.obs[pert_key].unique() if c != ctrl_label]
 
     if len(_eval) > MAX_EVAL_PERTS:
         _eval_counts = [(c, (adata.obs[pert_key] == c).sum()) for c in _eval]
@@ -472,28 +416,28 @@ def run_eval(adata, cfg: dict) -> dict:
             _m = adata.obs[pert_key] == _c
             _xt = adata[_m].layers["X_true_log"][:, _real_gene_idx]
             _xp = adata[_m].layers["C2S_pred_log"][:, _real_gene_idx]
-            _dk = f"K562_{_c}"
-            _deg_list = adata.uns["rank_genes_groups_cov"].get(_dk, [])
-            _de = np.where(np.isin(adata.var_names[_real_gene_idx], _deg_list[:top_k_de]))[0]
 
             pm = _xp.mean(0)
             tm = _xt.mean(0)
 
+            # Deltas relative to control
+            _pred_delta = pm - ctrl_mu
+            _true_delta = tm - ctrl_mu
+
+            # Top-k genes by |true_delta| for T2_Pearson_Delta_TopK
+            _k = min(top_k_de, len(_true_delta))
+            _top_k_idx = np.argsort(np.abs(_true_delta))[-_k:]
+
             res["condition"].append(_c)
-            res["T1_CA"].append(ca_v[i])
-            res["T1_PDS"].append(pds_v[i])
-            res["T1_PR"].append(_pearson(pm - ctrl_mu, tm - ctrl_mu))
-            res["T2_DA"].append(_da(pm, tm, ctrl_mu))
-
-            if len(_de) > 0:
-                res["T2_PRde"].append(
-                    _pearson(pm[_de] - ctrl_mu[_de], tm[_de] - ctrl_mu[_de]))
-            else:
-                res["T2_PRde"].append(np.nan)
-
-            res["T2_JC"].append(_jaccard(pm, tm, ctrl_mu, top_k_de))
-            res["T3_EN"].append(_energy(_xp, _xt, seed=seed))
-            res["T3_MM"].append(_mmd(_xp, _xt, seed=seed))
+            res["T1_Centroid_Accuracy"].append(ca_v[i])
+            res["T1_Profile_Distance_Score"].append(pds_v[i])
+            res["T1_Systema_Pearson_Delta"].append(_pearson(_pred_delta, _true_delta))
+            res["T2_Directional_Accuracy"].append(_da(pm, tm, ctrl_mu))
+            res["T2_Pearson_Delta_TopK"].append(
+                _pearson(_pred_delta[_top_k_idx], _true_delta[_top_k_idx]))
+            res["T2_Jaccard_TopK"].append(_jaccard(pm, tm, ctrl_mu, top_k_de))
+            res["T3_Energy_Distance"].append(_energy(_xp, _xt, n=max_t3, seed=seed))
+            res["T3_MMD_RBF"].append(_mmd(_xp, _xt, n=max_t3, seed=seed))
 
             del _xt, _xp, pm, tm
             if i % 20 == 0 and torch.cuda.is_available():
@@ -502,16 +446,19 @@ def run_eval(adata, cfg: dict) -> dict:
         df = pd.DataFrame(res)
         pert_names = CN
 
-        # Aggregate metrics for benchmark tool compatibility
+        # Aggregate metrics — standard benchmark key names
+        def _mean(col):
+            return float(df[col].mean()) if col in df.columns else np.nan
+
         metrics = {
-            "centroid_accuracy": float(df["T1_CA"].mean()) if "T1_CA" in df.columns else np.nan,
-            "profile_distance_score": float(df["T1_PDS"].mean()) if "T1_PDS" in df.columns else np.nan,
-            "pearson_delta": float(df["T1_PR"].mean()) if "T1_PR" in df.columns else np.nan,
-            "directional_accuracy": float(df["T2_DA"].mean()) if "T2_DA" in df.columns else np.nan,
-            "pearson_delta_de": float(df["T2_PRde"].mean()) if "T2_PRde" in df.columns else np.nan,
-            "jaccard_de": float(df["T2_JC"].mean()) if "T2_JC" in df.columns else np.nan,
-            "energy_distance": float(df["T3_EN"].mean()) if "T3_EN" in df.columns else np.nan,
-            "mmd": float(df["T3_MM"].mean()) if "T3_MM" in df.columns else np.nan,
+            "T1_Centroid_Accuracy":      _mean("T1_Centroid_Accuracy"),
+            "T1_Profile_Distance_Score": _mean("T1_Profile_Distance_Score"),
+            "T1_Systema_Pearson_Delta":  _mean("T1_Systema_Pearson_Delta"),
+            "T2_Directional_Accuracy":   _mean("T2_Directional_Accuracy"),
+            "T2_Pearson_Delta_TopK":     _mean("T2_Pearson_Delta_TopK"),
+            "T2_Jaccard_TopK":           _mean("T2_Jaccard_TopK"),
+            "T3_Energy_Distance":        _mean("T3_Energy_Distance"),
+            "T3_MMD_RBF":                _mean("T3_MMD_RBF"),
         }
 
     eval_end = time.time()

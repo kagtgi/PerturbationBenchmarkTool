@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data files (large)
+*.h5ad
+*.h5
+*.hdf5
+
+# Model checkpoints & downloads
+*.pt
+*.ckpt
+*.bin
+*.safetensors
+model.zip
+norman_umi_go.tar.gz
+norman_umi_go/
+model_ckpt/
+scGPT_human/
+ST-HVG-Replogle/
+pretrained_cpa_k562/
+
+# Temp files written by STATE runner
+_state_raw.h5ad
+_state_preprocessed.h5ad
+_state_predicted.h5ad
+
+# Results (keep .gitkeep placeholder)
+eval/results/*
+!eval/results/.gitkeep
+
+# Logs & debug artifacts
+*.log
+debug-*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
