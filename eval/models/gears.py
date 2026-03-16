@@ -210,11 +210,13 @@ def run_eval(adata, cfg: dict) -> dict:
                 len(pert_names), len(overlap_sorted))
 
     # --- Metrics -----------------------------------------------------------
+    # GEARS outputs one deterministic centroid prediction per perturbation
+    # (not a cell distribution), so T3 distributional metrics (energy distance,
+    # MMD) are skipped — comparing a single point to a cell distribution is
+    # not equivalent to how T3 is computed for models that generate per-cell
+    # predictions (scGPT, STATE, C2S, CPA).
     metrics = compute_all_metrics(
         pred_centroids, true_centroids, ctrl_mean_overlap,
-        pred_cells_dict=pred_point_dict,
-        true_cells_dict=true_cells_dict,
-        pert_names=pert_names,
     )
 
     return {
