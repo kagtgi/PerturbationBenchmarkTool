@@ -207,12 +207,21 @@ def run_model_in_subprocess(
     # Get model-specific requirements
     requirements = MODEL_REQUIREMENTS.get(model_name, [])
     
+    # Project root = parent of the `eval/` package directory
+    project_root = str(Path(__file__).parent.parent.resolve())
+
     # Create isolated runner script
     runner_script = f'''
 import sys, os, warnings, json, time, logging, subprocess
 warnings.filterwarnings("ignore")
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
+
+# Ensure the project root is importable (eval/ package lives there)
+_project_root = {repr(project_root)}
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+os.chdir(_project_root)  # working directory for relative file paths
 
 # ---------------------------------------------------------------------------
 # STEP 1 — Pre-install model-specific packages in a single pip call.
@@ -283,60 +292,77 @@ finally:
     with open(temp_script, 'w') as f:
         f.write(runner_script)
     
-    # Run in subprocess with timeout
+    # Run in subprocess with timeout — stream output live to console/notebook
     timeout_seconds = timeout_minutes * 60
+    log_lines: list[str] = [
+        f"=== {model_name} Evaluation Log ===\n",
+        f"Timestamp: {datetime.now().isoformat()}\n",
+        f"Timeout: {timeout_minutes} minutes\n\n",
+    ]
     try:
-        process_result = subprocess.run(
-            [sys.executable, temp_script],
-            capture_output=True,
+        proc = subprocess.Popen(
+            [sys.executable, "-u", temp_script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,   # merge stderr → stdout
             text=True,
-            timeout=timeout_seconds,
-            env={**os.environ, 'PYTHONUNBUFFERED': '1'},
-            cwd=os.getcwd(),
+            bufsize=1,                  # line-buffered
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            cwd=project_root,
         )
-        
-        # Save logs
-        with open(log_file, 'w') as f:
-            f.write(f"=== {model_name} Evaluation Log ===\n")
-            f.write(f"Timestamp: {datetime.now().isoformat()}\n")
-            f.write(f"Timeout: {timeout_minutes} minutes\n\n")
-            f.write(f"STDOUT:\n{process_result.stdout}\n\n")
-            f.write(f"STDERR:\n{process_result.stderr}\n")
-        
-        # Load results
+
+        # Stream lines live; collect for log file
+        deadline = start_time + timeout_seconds
+        timed_out = False
+        for line in proc.stdout:                         # type: ignore[union-attr]
+            print(f"[{model_name}] {line}", end="", flush=True)
+            log_lines.append(line)
+            if time.time() > deadline:
+                proc.kill()
+                timed_out = True
+                break
+        proc.wait()
+
+        # Save all collected output to log file
+        with open(log_file, "w") as f:
+            f.writelines(log_lines)
+
+        if timed_out:
+            raise subprocess.TimeoutExpired(proc.args, timeout_seconds)
+
+        # Load results written by the subprocess
         if os.path.exists(result_file):
-            with open(result_file, 'r') as f:
+            with open(result_file, "r") as f:
                 model_result = json.load(f)
         else:
             model_result = {
-                'model': model_name,
-                'status': 'failed',
-                'error': 'No results file generated',
-                'runtime_seconds': time.time() - start_time,
-                'metrics': {},
-                'pert_names': [],
+                "model": model_name,
+                "status": "failed",
+                "error": "No results file generated (subprocess may have crashed at import)",
+                "runtime_seconds": time.time() - start_time,
+                "metrics": {},
+                "pert_names": [],
             }
-            
+
     except subprocess.TimeoutExpired:
         logger.warning(f"⚠️  {model_name} timed out after {timeout_minutes} minutes")
         model_result = {
-            'model': model_name,
-            'status': 'timeout',
-            'error': f'Exceeded {timeout_minutes} minutes',
-            'runtime_seconds': timeout_seconds,
-            'metrics': {},
-            'pert_names': [],
+            "model": model_name,
+            "status": "timeout",
+            "error": f"Exceeded {timeout_minutes} minutes",
+            "runtime_seconds": timeout_seconds,
+            "metrics": {},
+            "pert_names": [],
         }
-        
+
     except Exception as e:
         logger.error(f"❌ Subprocess failed for {model_name}: {e}")
         model_result = {
-            'model': model_name,
-            'status': 'failed',
-            'error': str(e),
-            'runtime_seconds': time.time() - start_time,
-            'metrics': {},
-            'pert_names': [],
+            "model": model_name,
+            "status": "failed",
+            "error": str(e),
+            "runtime_seconds": time.time() - start_time,
+            "metrics": {},
+            "pert_names": [],
         }
     
     finally:
@@ -390,6 +416,71 @@ def run_model_in_process(
         }
     
     return result
+
+
+# =============================================================================
+# LOG / DEBUG HELPERS
+# =============================================================================
+
+def print_logs(output_dir: str | None = None, model: str | None = None) -> None:
+    """Print all evaluation logs from a previous run.
+
+    Call this after a failed run to see what went wrong::
+
+        from eval.eval_runner import print_logs
+        print_logs()           # all models
+        print_logs(model="gears")  # single model
+
+    Parameters
+    ----------
+    output_dir : str, optional
+        Directory where logs were saved (default: config.OUTPUT_DIR).
+    model : str, optional
+        If given, print only that model's log; otherwise print all.
+    """
+    import glob as _glob
+
+    output_dir = output_dir or config.OUTPUT_DIR
+    pattern = (
+        os.path.join(output_dir, f"{model}_log.txt")
+        if model
+        else os.path.join(output_dir, "*_log.txt")
+    )
+    files = sorted(_glob.glob(pattern))
+    if not files:
+        print(f"No log files found in {output_dir!r}. "
+              "Make sure output_dir matches what was passed to run().")
+        return
+    for path in files:
+        print(f"\n{'='*70}")
+        print(f"LOG: {path}")
+        print('='*70)
+        with open(path) as f:
+            print(f.read())
+
+
+def print_errors(output_dir: str | None = None) -> None:
+    """Print error messages and tracebacks from failed model runs.
+
+    Call this after a failed run::
+
+        from eval.eval_runner import print_errors
+        print_errors()
+    """
+    import glob as _glob
+
+    output_dir = output_dir or config.OUTPUT_DIR
+    for path in sorted(_glob.glob(os.path.join(output_dir, "*_results.json"))):
+        with open(path) as f:
+            res = json.load(f)
+        if res.get("status") != "success":
+            print(f"\n{'='*70}")
+            print(f"MODEL: {res.get('model')}  status={res.get('status')}")
+            print(f"Error: {res.get('error')}")
+            tb = res.get("traceback")
+            if tb:
+                print("Traceback:")
+                print(tb)
 
 
 # =============================================================================
