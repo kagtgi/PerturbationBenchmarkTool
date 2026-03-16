@@ -97,16 +97,16 @@ def run_eval(adata, cfg: dict) -> dict:
     pert_col = cfg.get("PERT_COL", config.PERT_COL)
     seed = cfg.get("RANDOM_SEED", config.RANDOM_SEED)
 
-    # --- Install & download ------------------------------------------------
-    _install_dependencies()
-    model_dir, checkpoint = _download_model()
-
-    # --- Prepare data ------------------------------------------------------
+    # --- Prepare data (before _install_dependencies evicts modules) --------
+    # write_h5ad must happen while the original pandas/anndata classes are
+    # still registered in anndata's IORegistry. _install_dependencies evicts
+    # these modules from sys.modules, causing re-imports that create new class
+    # objects; after that, type(adata.obs) no longer matches the registry and
+    # write_h5ad raises IORegistryError.
     adata.obs[pert_col] = adata.obs[pert_col].astype(str)
     if "counts" not in adata.layers:
         adata.layers["counts"] = adata.X.copy()
     adata.X = adata.layers["counts"].copy()
-
     if "gem_group" not in adata.obs.columns:
         adata.obs["gem_group"] = "batch1"
 
@@ -114,6 +114,10 @@ def run_eval(adata, cfg: dict) -> dict:
     pre_path = "_state_preprocessed.h5ad"
     pred_path = "_state_predicted.h5ad"
     adata.write_h5ad(raw_path)
+
+    # --- Install & download ------------------------------------------------
+    _install_dependencies()
+    model_dir, checkpoint = _download_model()
 
     # --- STATE preprocess --------------------------------------------------
     logger.info("STATE preprocess (norm -> log1p -> 2000 HVGs) ...")

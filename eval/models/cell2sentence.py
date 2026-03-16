@@ -112,7 +112,11 @@ def run_eval(adata, cfg: dict) -> dict:
 
     # DEGs
     adata_log = adata.copy()
-    sc.pp.log1p(adata_log)
+    # Apply log1p directly to the matrix rather than via sc.pp.log1p to avoid
+    # singledispatch failures caused by sys.path manipulation in
+    # _install_dependencies (inserting C2S_DIR at front can shadow anndata,
+    # so AnnData is no longer the registered type in scanpy's dispatch table).
+    adata_log.X = np.log1p(adata_log.X)
     sc.tl.rank_genes_groups(
         adata_log, groupby=pert_key, reference=ctrl_label,
         method="t-test", n_genes=adata.n_vars,
