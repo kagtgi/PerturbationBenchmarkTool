@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import json
 import logging
 import os
 import re
@@ -17,6 +18,8 @@ import shutil
 import subprocess
 import sys
 import time
+import types
+import urllib.request
 from collections import defaultdict
 
 import numpy as np
@@ -93,15 +96,76 @@ def _clear_module_cache() -> None:
             sys.modules.pop(k, None)
 
 
+def _install_jax_stub() -> None:
+    """Install lightweight JAX/FLAX stubs so CPA can import without real JAX."""
+
+    class _JaxStub(types.ModuleType):
+        """Stub module that satisfies JAX/FLAX imports without real JAX."""
+
+        def __init__(self, name: str):
+            super().__init__(name)
+
+        def __getattr__(self, name: str):
+            # Return a new child stub; auto-register as submodule in sys.modules
+            child_name = f"{self.__name__}.{name}"
+            if child_name not in sys.modules:
+                child = _JaxStub(child_name)
+                sys.modules[child_name] = child
+            return sys.modules[child_name]
+
+        def __setattr__(self, name: str, value):
+            object.__setattr__(self, name, value)
+
+        def __call__(self, *args, **kwargs):
+            # When used as a decorator, return the decorated callable unchanged
+            if len(args) == 1 and callable(args[0]) and not kwargs:
+                return args[0]
+            return _JaxStub(f"{self.__name__}.__call__")
+
+        def __iter__(self):
+            return iter([])
+
+        def __bool__(self):
+            return True
+
+    # Register all known JAX/FLAX submodules
+    _mods = [
+        "jax", "jax.numpy", "jax.random", "jax.config", "jax.interpreters",
+        "jax.lib", "jax.dlpack", "jax.tree_util",
+        "flax", "flax.linen", "flax.training", "flax.serialization",
+        "flax.struct", "flax.core", "flax.training.train_state",
+        "flax.optim", "jaxlib", "jaxlib.xla_extension",
+    ]
+    for mod_name in _mods:
+        if mod_name not in sys.modules:
+            sys.modules[mod_name] = _JaxStub(mod_name)
+
+    # Special attributes needed by specific consumers
+    class _JaxArray:
+        __or__ = __ror__ = lambda self, other: other  # type: ignore
+
+    sys.modules["jax.numpy"].ndarray = _JaxArray()
+
+    class _TrainState:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def apply_gradients(self, *args, **kwargs):
+            return self
+
+    sys.modules["flax.training.train_state"].TrainState = _TrainState
+    sys.modules["flax.struct"].dataclass = lambda *a, **k: (lambda cls: cls)
+
+
 def _patch_scvi() -> None:
     """Apply compatibility patches to scvi-tools."""
     spec = importlib.util.find_spec("scvi")
     if not spec or not spec.submodule_search_locations:
         return
-    p = spec.submodule_search_locations[0]
+    scvi_path = spec.submodule_search_locations[0]
 
-    # Patch _types.py
-    types_path = os.path.join(p, "_types.py")
+    # --- _types.py ---
+    types_path = os.path.join(scvi_path, "_types.py")
     if os.path.exists(types_path):
         with open(types_path, "w") as f:
             f.write(
@@ -113,48 +177,46 @@ def _patch_scvi() -> None:
                 "MinifiedDataType = str\n"
             )
 
-    # Patch train/__init__.py — remove SaveBestState if it fails
-    train_init = os.path.join(p, "train", "__init__.py")
+    # --- train/__init__.py — remove SaveBestState ---
+    train_init = os.path.join(scvi_path, "train", "__init__.py")
     if os.path.exists(train_init):
         with open(train_init) as f:
             content = f.read()
         content = re.sub(
             r"from\s+\._callbacks\s+import\s+SaveBestState",
-            "# removed SaveBestState", content,
+            "# removed SaveBestState",
+            content,
         )
         with open(train_init, "w") as f:
             f.write(content)
 
+    # --- distributions/_negative_binomial.py — patch empty except blocks ---
+    nb_path = os.path.join(scvi_path, "distributions", "_negative_binomial.py")
+    if os.path.exists(nb_path):
+        with open(nb_path) as f:
+            nb_content = f.read()
+        # Fill empty except: pass blocks that may be caused by JAX stub side effects
+        nb_content = re.sub(
+            r"(except\s+\w[\w.]*\s*:\s*\n)(\s*)pass\b",
+            r"\1\2    pass  # jax not available",
+            nb_content,
+        )
+        with open(nb_path, "w") as f:
+            f.write(nb_content)
 
-def _install_jax_stub() -> None:
-    """Install a lightweight JAX/FLAX stub so CPA can import without real JAX."""
-    import types as _t
-
-    class _JaxStub(_t.ModuleType):
-        def __getattr__(self, name):
-            return _JaxStub(name)
-        def __call__(self, *a, **k):
-            return lambda fn: fn
-
-    mods = [
-        "jax", "jax.numpy", "jax.random", "jax.config", "jax.interpreters",
-        "jax.lib", "jax.dlpack", "flax", "flax.linen", "flax.training",
-        "flax.serialization", "flax.struct", "flax.core",
-        "flax.training.train_state", "flax.optim", "jaxlib",
-        "jaxlib.xla_extension",
-    ]
-    for m in mods:
-        sys.modules.setdefault(m, _JaxStub(m))
-
-    class _Arr:
-        __or__ = __ror__ = lambda s, o: o
-    sys.modules["jax.numpy"].ndarray = _Arr()
-
-    class _TS:
-        __init__ = lambda s, *a, **k: None
-        apply_gradients = lambda s, *a, **k: s
-    sys.modules["flax.training.train_state"].TrainState = _TS
-    sys.modules["flax.struct"].dataclass = lambda *a, **k: (lambda cls: cls)
+    # --- nn/_base_module.py — remove bare JAX imports that break with stub ---
+    base_module_path = os.path.join(scvi_path, "nn", "_base_module.py")
+    if os.path.exists(base_module_path):
+        with open(base_module_path) as f:
+            bm_content = f.read()
+        bm_content = re.sub(
+            r"^(from jax\b.*|import jax\b.*)$",
+            r"# \1  # jax stub active",
+            bm_content,
+            flags=re.MULTILINE,
+        )
+        with open(base_module_path, "w") as f:
+            f.write(bm_content)
 
 
 def _patch_cpa_source() -> None:
@@ -187,14 +249,18 @@ def _patch_cpa_source() -> None:
     with open(dp, "w") as f:
         f.write(dc)
 
-    # Patch _model.py — remove SaveBestState
+    # Patch _model.py — remove SaveBestState import AND variable usage
     mp = os.path.join(CPA_DIR, "cpa", "_model.py")
     with open(mp) as f:
         mc = f.read()
+
+    # Remove import
     mc = re.sub(
         r"from scvi\.train\._callbacks import SaveBestState",
-        "# removed", mc,
+        "# removed SaveBestState import",
+        mc,
     )
+    # Remove parse_use_gpu_arg import
     mc = re.sub(
         r"from scvi\.model\._utils import parse_use_gpu_arg",
         "import torch as _ct\n"
@@ -204,39 +270,253 @@ def _patch_cpa_source() -> None:
         "    return (a, None, d) if return_device else a",
         mc,
     )
+    # Remove: checkpoint = SaveBestState(...)
+    mc = re.sub(
+        r"checkpoint\s*=\s*SaveBestState\([^)]*\)\s*\n",
+        "# checkpoint = SaveBestState removed\n",
+        mc,
+    )
+    # Remove callbacks list that includes checkpoint variable (single-line)
+    mc = re.sub(
+        r"callbacks\s*=\s*\[[^\]]*checkpoint[^\]]*\]\s*\n",
+        "callbacks = []\n",
+        mc,
+    )
+    # Also handle multi-line callbacks list containing checkpoint
+    mc = re.sub(
+        r"callbacks\s*=\s*\[[^\]]*checkpoint[^\]]*\]\s*\n",
+        "callbacks = []\n",
+        mc,
+        flags=re.DOTALL,
+    )
     with open(mp, "w") as f:
         f.write(mc)
 
 
+def _pandas_shim() -> None:
+    """Install pandas backward-compat shims needed by torch.load on old checkpoints.
+
+    Older CPA checkpoints were pickled with pandas 1.x class names. torch.load
+    unpickles them and may fail with AttributeError if the class names have
+    changed in pandas 2.x.
+    """
+    try:
+        import pandas as pd
+
+        # Map old pandas 1.x internal Index module paths → shim modules
+        _shim_mods = [
+            "pandas.core.indexes.base",
+            "pandas.core.indexes.range",
+            "pandas.core.indexes.numeric",
+            "pandas.core.indexes.int64",
+        ]
+        for old_mod in _shim_mods:
+            if old_mod not in sys.modules:
+                shim = types.ModuleType(old_mod)
+                shim.Index = pd.Index
+                shim.RangeIndex = pd.RangeIndex
+                shim.Int64Index = getattr(pd, "Int64Index", pd.Index)
+                shim.Float64Index = getattr(pd, "Float64Index", pd.Index)
+                sys.modules[old_mod] = shim
+    except Exception:
+        pass  # Non-critical; only needed for old checkpoints
+
+
+def _reconcile_gene_names(adata, ckpt_var_names: list[str]):
+    """Map h5ad gene IDs to checkpoint gene symbols if needed.
+
+    Tries, in order:
+    1. Direct overlap — no mapping needed.
+    2. A gene_name / gene_symbols / symbol column in ``adata.var``.
+    3. pybiomart Ensembl → HGNC symbol query.
+    4. MyGene.info REST API (batch query, no auth required).
+
+    Returns
+    -------
+    adata : AnnData with var_names remapped (if successful)
+    ensembl_to_symbol : dict or None
+    """
+    import pandas as pd
+
+    h5_names = list(adata.var_names)
+    ckpt_set = set(ckpt_var_names)
+
+    # 1. Direct overlap
+    direct_overlap = len(set(h5_names) & ckpt_set)
+    if direct_overlap >= 50:
+        logger.info("Gene names already overlap (%d genes)", direct_overlap)
+        return adata, None
+
+    # 2. var column mapping
+    for col in ("gene_name", "gene_names", "gene_symbols", "symbol", "hgnc_symbol"):
+        if col in adata.var.columns:
+            mapping = dict(zip(adata.var_names, adata.var[col].astype(str)))
+            mapped_overlap = len(set(mapping.values()) & ckpt_set)
+            if mapped_overlap >= 50:
+                logger.info(
+                    "Using adata.var['%s'] for gene mapping (%d overlapping)",
+                    col, mapped_overlap,
+                )
+                new_names = pd.Index([mapping.get(g, g) for g in adata.var_names])
+                adata = adata.copy()
+                adata.var_names = new_names
+                adata.var_names_make_unique()
+                return adata, mapping
+
+    # Detect if IDs look like Ensembl (ENSG...)
+    ensembl_ids = [g for g in h5_names if g.startswith("ENSG")]
+    if not ensembl_ids:
+        logger.warning(
+            "Gene names not Ensembl IDs and no var column found; "
+            "proceeding with overlap=%d",
+            direct_overlap,
+        )
+        return adata, None
+
+    # 3. pybiomart
+    try:
+        import pybiomart
+        server = pybiomart.Server(host="http://www.ensembl.org")
+        mart = server["ENSEMBL_MART_ENSEMBL"]
+        dataset = mart["hsapiens_gene_ensembl"]
+        result = dataset.query(
+            attributes=["ensembl_gene_id", "hgnc_symbol"],
+            filters={"ensembl_gene_id": ensembl_ids[:5000]},
+        )
+        e2s = dict(zip(result["Gene stable ID"], result["HGNC symbol"]))
+        e2s = {k: v for k, v in e2s.items() if v}  # drop empty symbols
+        mapped_overlap = len(set(e2s.get(g, g) for g in h5_names) & ckpt_set)
+        if mapped_overlap >= 50:
+            logger.info(
+                "pybiomart: %d Ensembl→symbol, %d overlap with checkpoint",
+                len(e2s), mapped_overlap,
+            )
+            new_names = pd.Index([e2s.get(g, g) for g in adata.var_names])
+            adata = adata.copy()
+            adata.var_names = new_names
+            adata.var_names_make_unique()
+            return adata, e2s
+    except Exception as exc:
+        logger.warning("pybiomart failed (%s), trying MyGene.info", exc)
+
+    # 4. MyGene.info REST API
+    try:
+        batch_size = 1000
+        e2s = {}
+        for i in range(0, len(ensembl_ids), batch_size):
+            batch = ensembl_ids[i: i + batch_size]
+            payload = (
+                "q=" + ",".join(batch)
+                + "&fields=symbol&species=human&scopes=ensembl.gene"
+            )
+            req = urllib.request.Request(
+                "https://mygene.info/v3/query",
+                data=payload.encode(),
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                hits = json.loads(resp.read())
+            for hit in hits:
+                if "query" in hit and "symbol" in hit:
+                    e2s[hit["query"]] = hit["symbol"]
+        mapped_overlap = len(set(e2s.get(g, g) for g in h5_names) & ckpt_set)
+        if mapped_overlap >= 50:
+            logger.info(
+                "MyGene.info: %d Ensembl→symbol, %d overlap with checkpoint",
+                len(e2s), mapped_overlap,
+            )
+            new_names = pd.Index([e2s.get(g, g) for g in adata.var_names])
+            adata = adata.copy()
+            adata.var_names = new_names
+            adata.var_names_make_unique()
+            return adata, e2s
+    except Exception as exc:
+        logger.warning("MyGene.info failed (%s)", exc)
+
+    logger.warning(
+        "Gene reconciliation failed; checkpoint overlap = %d. "
+        "Proceeding with partial overlap.",
+        direct_overlap,
+    )
+    return adata, None
+
+
 def _download_checkpoint(seed: int) -> dict:
-    """Download pretrained CPA checkpoint. Returns the state dict."""
+    """Download pretrained CPA checkpoint.
+
+    Returns dict with keys: sd, ckpt_var_names, attr, pert_encoder, arch.
+    """
     if not os.path.exists(PRETRAINED_PT):
         import gdown
         os.makedirs(MODEL_DIR, exist_ok=True)
         logger.info("Downloading pretrained CPA K562 checkpoint ...")
-        gdown.download(id=KANG_MODEL_ID,
-                       output=PRETRAINED_PT, quiet=False)
+        gdown.download(id=KANG_MODEL_ID, output=PRETRAINED_PT, quiet=False)
+
+    # Install pandas shim before torch.load to handle old pickled DataFrames
+    _pandas_shim()
 
     sd_raw = torch.load(PRETRAINED_PT, map_location="cpu", weights_only=False)
 
-    # Normalize state dict structure
-    if isinstance(sd_raw, dict) and "state_dict" in sd_raw:
-        attr = sd_raw.get("attr_dict", {})
-        arch = sd_raw.get("model_state_dict", sd_raw.get("hyper_parameters", {}))
-        sd = sd_raw["state_dict"]
-    elif isinstance(sd_raw, dict) and any(k.startswith("module.") or "encoder" in k for k in sd_raw):
-        sd = sd_raw
-        attr = {}
-        arch = {}
+    # Normalize checkpoint structure.
+    # Possible structures:
+    #   {"state_dict": ..., "attr_dict": ..., "model_state_dict": ...}
+    #   {"model_state_dict": ..., "hyper_parameters": ...}  (Lightning style)
+    #   flat state dict (keys directly map to model parameters)
+    attr: dict = {}
+    arch: dict = {}
+    pert_encoder: dict = {}
+    ckpt_var_names = None
+
+    if isinstance(sd_raw, dict):
+        if "state_dict" in sd_raw:
+            sd = sd_raw["state_dict"]
+            attr_dict = sd_raw.get("attr_dict", {})
+            # attr_dict may nest under init_params_ → hyper_params
+            if "init_params_" in attr_dict:
+                inner = attr_dict["init_params_"]
+                if isinstance(inner, dict) and "hyper_params" in inner:
+                    attr = inner["hyper_params"]
+                else:
+                    attr = inner
+            else:
+                attr = attr_dict
+            arch = sd_raw.get("model_state_dict", sd_raw.get("hyper_parameters", {}))
+            # pert_encoder: mapping perturbation name → embedding index
+            registry = sd_raw.get("var_registry", {})
+            if "perturbation_key" in registry:
+                pert_encoder = registry["perturbation_key"]
+            elif "pert_encoder" in sd_raw:
+                pert_encoder = sd_raw["pert_encoder"]
+            # var_names from attr or top-level
+            ckpt_var_names = attr.get(
+                "var_names",
+                sd_raw.get("var_names", None),
+            )
+        elif "model_state_dict" in sd_raw:
+            sd = sd_raw["model_state_dict"]
+            attr = sd_raw.get("hyper_parameters", {})
+            arch = attr
+        elif any("encoder" in k or k.startswith("module.") for k in sd_raw):
+            sd = sd_raw
+        else:
+            sd = sd_raw
     else:
         sd = sd_raw
-        attr = {}
-        arch = {}
 
-    # Strip "module." prefix
+    # Strip "module." prefix (DataParallel checkpoints)
     sd = {(k[7:] if k.startswith("module.") else k): v for k, v in sd.items()}
 
-    return {"sd": sd, "attr": attr, "arch": arch}
+    if ckpt_var_names is not None and not isinstance(ckpt_var_names, list):
+        ckpt_var_names = list(ckpt_var_names)
+
+    return {
+        "sd": sd,
+        "attr": attr,
+        "arch": arch,
+        "pert_encoder": pert_encoder,
+        "ckpt_var_names": ckpt_var_names,
+    }
 
 
 def run_eval(adata, cfg: dict) -> dict:
@@ -258,7 +538,6 @@ def run_eval(adata, cfg: dict) -> dict:
     import pandas as pd
     import scanpy as sc
     from scipy.spatial.distance import cdist
-    from sklearn.metrics import r2_score
     from tqdm import tqdm
 
     t_start = time.time()
@@ -283,12 +562,11 @@ def run_eval(adata, cfg: dict) -> dict:
 
     # --- Download checkpoint -----------------------------------------------
     ckpt = _download_checkpoint(seed)
-    sd, attr, arch = ckpt["sd"], ckpt["attr"], ckpt["arch"]
-
-    # Detect checkpoint gene names for mapping
-    ckpt_var_names = attr.get("var_names", None)
-    if ckpt_var_names is not None and not isinstance(ckpt_var_names, list):
-        ckpt_var_names = list(ckpt_var_names)
+    sd = ckpt["sd"]
+    attr = ckpt["attr"]
+    arch = ckpt["arch"]
+    pert_encoder = ckpt["pert_encoder"]
+    ckpt_var_names = ckpt["ckpt_var_names"]
 
     # --- Prepare adata -----------------------------------------------------
     if "perturbation" not in adata.obs.columns:
@@ -300,34 +578,27 @@ def run_eval(adata, cfg: dict) -> dict:
     if "counts" not in adata.layers:
         adata.layers["counts"] = adata.X.copy()
 
-    # Gene name mapping (Ensembl → symbol if needed)
-    _ensembl_to_symbol = None
+    # --- Gene reconciliation (Ensembl → symbol if needed) ------------------
     if ckpt_var_names:
-        h5_names = set(adata.var_names)
-        ckpt_set = set(ckpt_var_names)
-        if len(h5_names & ckpt_set) < 50:
-            # Try mapping via var columns
-            for col in ["gene_name", "gene_names", "gene_symbols", "symbol"]:
-                if col in adata.var.columns:
-                    _ensembl_to_symbol = dict(
-                        zip(adata.var_names, adata.var[col].astype(str))
-                    )
-                    break
-            if _ensembl_to_symbol:
-                mapped = set(_ensembl_to_symbol.values()) & ckpt_set
-                if len(mapped) > 50:
-                    adata.var_names = pd.Index(
-                        [_ensembl_to_symbol.get(g, g) for g in adata.var_names]
-                    )
-                    adata.var_names_make_unique()
-
-    # Filter to shared genes with checkpoint if possible
-    if ckpt_var_names:
+        adata, _ = _reconcile_gene_names(adata, ckpt_var_names)
+        # Filter to shared genes
         shared = sorted(set(adata.var_names) & set(ckpt_var_names))
         if shared:
             adata = adata[:, shared].copy()
+            logger.info("Gene subset: %d shared with checkpoint", len(shared))
 
     adata.obs["cov_cond"] = "K562_" + adata.obs["perturbation"].astype(str)
+
+    # Filter to perturbations the checkpoint's pert_encoder knows about
+    if pert_encoder:
+        known_perts = set(pert_encoder.keys())
+        valid_perts = set(adata.obs["perturbation"].unique()) & (known_perts | {ctrl_label})
+        before = adata.n_obs
+        adata = adata[adata.obs["perturbation"].isin(valid_perts)].copy()
+        logger.info(
+            "Filtered to %d perturbations known by checkpoint (%d → %d cells)",
+            len(valid_perts), before, adata.n_obs,
+        )
 
     # --- DEGs --------------------------------------------------------------
     if sp.issparse(adata.X):
@@ -376,8 +647,10 @@ def run_eval(adata, cfg: dict) -> dict:
 
     # Splits
     all_perts = [p for p in adata.obs["perturbation"].unique() if p != ctrl_label]
-    ood = rng.choice(all_perts, max(1, int(len(all_perts) * 0.1)),
-                     replace=False).tolist() if all_perts else []
+    ood = (
+        rng.choice(all_perts, max(1, int(len(all_perts) * 0.1)), replace=False).tolist()
+        if all_perts else []
+    )
     adata.obs["split"] = rng.choice(["train", "valid"], adata.n_obs, p=[0.85, 0.15])
     if ood:
         adata.obs.loc[adata.obs["perturbation"].isin(ood), "split"] = "ood"
@@ -405,7 +678,7 @@ def run_eval(adata, cfg: dict) -> dict:
             if m:
                 dec_layers = max(dec_layers, int(m.group(1)) + 1)
 
-    cpa_kw = {}
+    cpa_kw: dict = {}
     for k in ("n_latent", "n_layers_encoder", "n_hidden_encoder",
               "dropout_rate", "use_batch_norm",
               "n_hidden_decoder", "n_layers_decoder"):
@@ -474,9 +747,9 @@ def run_eval(adata, cfg: dict) -> dict:
 
     model.predict(adata, batch_size=512)
 
-    # Find predictions
+    # Find predictions in obsm or layers
     pred_found = False
-    for loc, d in [("obsm", adata.obsm), ("layers", adata.layers)]:
+    for _loc, d in [("obsm", adata.obsm), ("layers", adata.layers)]:
         for k in list(d.keys()):
             if "pred" in k.lower() or k == "CPA_pred":
                 adata.layers["CPA_pred"] = np.array(d[k])
@@ -513,8 +786,11 @@ def run_eval(adata, cfg: dict) -> dict:
     adata.layers["CPA_pred_log"] = pred_log
 
     ctrl_for_mu = adata[adata.obs["perturbation"] == ctrl_label]
-    ctrl_mu = (ctrl_for_mu.layers["counts_log"].mean(0)
-               if ctrl_for_mu.n_obs > 0 else true_log.mean(0))
+    ctrl_mu = (
+        ctrl_for_mu.layers["counts_log"].mean(0)
+        if ctrl_for_mu.n_obs > 0
+        else true_log.mean(0)
+    )
 
     # --- 3-tier metrics ----------------------------------------------------
     eval_perts = [
@@ -557,7 +833,6 @@ def run_eval(adata, cfg: dict) -> dict:
     d_cross = (D * off).sum(1) / off.sum(1) if P > 1 else np.full(P, np.nan)
     pds_v = d_self / (d_self + d_cross + 1e-8)
 
-    # Per-perturbation T1/T2/T3
     def _pearson(a, b):
         if a.std() < 1e-8 or b.std() < 1e-8:
             return np.nan
@@ -566,8 +841,8 @@ def run_eval(adata, cfg: dict) -> dict:
 
     def _da(pm, tm, cm, thr=0.1):
         dp, dt = pm - cm, tm - cm
-        m = np.abs(dt) > thr
-        return float(np.mean(np.sign(dp[m]) == np.sign(dt[m]))) if m.any() else np.nan
+        mask = np.abs(dt) > thr
+        return float(np.mean(np.sign(dp[mask]) == np.sign(dt[mask]))) if mask.any() else np.nan
 
     def _jaccard(pm, tm, cm, k=50):
         pt = set(np.argsort(np.abs(pm - cm))[-k:].tolist())
@@ -581,8 +856,9 @@ def run_eval(adata, cfg: dict) -> dict:
             return np.nan
         p = p[r.choice(len(p), min(n, len(p)), replace=False)].astype(np.float32)
         q = q[r.choice(len(q), min(n, len(q)), replace=False)].astype(np.float32)
-        return max(float(2 * cdist(p, q).mean() - cdist(p, p).mean()
-                         - cdist(q, q).mean()), 0.0)
+        return max(float(
+            2 * cdist(p, q).mean() - cdist(p, p).mean() - cdist(q, q).mean()
+        ), 0.0)
 
     def _mmd(p, q, n=MAX_CELLS_SAMPLE):
         r = np.random.default_rng(0)
@@ -598,7 +874,7 @@ def run_eval(adata, cfg: dict) -> dict:
         Kpq = np.exp(-cdist(p, q, "sqeuclidean") / (2 * s2)).mean()
         return max(float(Kpp - 2 * Kpq + Kqq), 0.0)
 
-    res = defaultdict(list)
+    res: dict = defaultdict(list)
     ctrl_real = ctrl_mu[real_gene_idx]
     for i, c in enumerate(tqdm(CN, desc="CPA 3-tier", ncols=70)):
         m = adata.obs["perturbation"] == c
@@ -615,7 +891,8 @@ def run_eval(adata, cfg: dict) -> dict:
         res["T1_PR"].append(_pearson(pm - ctrl_real, tm - ctrl_real))
         res["T2_DA"].append(_da(pm, tm, ctrl_real))
         res["T2_PRde"].append(
-            _pearson(pm[de] - ctrl_real[de], tm[de] - ctrl_real[de]) if len(de) > 0 else np.nan
+            _pearson(pm[de] - ctrl_real[de], tm[de] - ctrl_real[de])
+            if len(de) > 0 else np.nan
         )
         res["T2_JC"].append(_jaccard(pm, tm, ctrl_real, top_k))
         res["T3_EN"].append(_energy(xp, xt))
