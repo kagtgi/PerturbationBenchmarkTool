@@ -321,15 +321,37 @@ finally:
         )
 
         # Stream lines live; collect for log file
+        # Handle tqdm progress bars: when a line contains \r, only the
+        # last segment is the current bar state.  We print it with \r so
+        # the terminal overwrites the previous bar in-place, and only
+        # log the final state to avoid bloating the log file.
         deadline = start_time + timeout_seconds
         timed_out = False
+        prev_was_progress = False
         for line in proc.stdout:                         # type: ignore[union-attr]
-            print(f"[{model_name}] {line}", end="", flush=True)
-            log_lines.append(line)
+            if '\r' in line:
+                # tqdm-style progress: take only the last \r segment
+                segments = line.rsplit('\r', 1)
+                latest = segments[-1]
+                if latest.strip():
+                    # Overwrite current terminal line with latest bar
+                    print(f"\r[{model_name}] {latest}", end="", flush=True)
+                    prev_was_progress = True
+                # Log only the final progress state (strip \r chars)
+                log_lines.append(latest)
+            else:
+                if prev_was_progress:
+                    # End the progress line before printing a normal line
+                    print(flush=True)
+                    prev_was_progress = False
+                print(f"[{model_name}] {line}", end="", flush=True)
+                log_lines.append(line)
             if time.time() > deadline:
                 proc.kill()
                 timed_out = True
                 break
+        if prev_was_progress:
+            print(flush=True)  # ensure terminal moves past last bar
         proc.wait()
 
         # Save all collected output to log file
