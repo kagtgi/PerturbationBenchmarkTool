@@ -82,6 +82,7 @@ def _install_dependencies():
     
     _pip("anndata>=0.10.0,<0.13.0")
     _pip(f"numpy=={_NP_VER}")
+    _pip("llvmlite>=0.46.0")
     _pip("numba>=0.60.0")
     _pip("scanpy>=1.10.0,<1.11.0")
     _pip("scvi-tools>=1.0.0,<1.5.0")

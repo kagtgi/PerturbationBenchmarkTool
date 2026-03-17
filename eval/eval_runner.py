@@ -93,6 +93,8 @@ DEFAULT_MODEL_REQUIREMENTS: dict[str, list[str]] = {
     #                   pip("pytorch-lightning>=2.2.0,<2.4.0"); pip("gdown"); pip("pybiomart")
     "cpa": [
         "anndata>=0.10.0,<0.13.0",
+        "llvmlite>=0.46.0",
+        "numba>=0.60.0",
         "scanpy>=1.10.0,<1.11.0",
         "scvi-tools>=1.0.0,<1.5.0",
         "lightning>=2.2.0,<2.4.0",
