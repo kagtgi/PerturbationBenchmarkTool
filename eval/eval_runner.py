@@ -65,18 +65,24 @@ DEFAULT_MODEL_REQUIREMENTS: dict[str, list[str]] = {
     "gears": [
         "torch_geometric",
         "cell-gears",
+        "llvmlite>=0.46.0",
+        "numba>=0.60.0",
         "scanpy",
     ],
     # Notebook cell 6: pip("uv", "huggingface_hub"); uv tool install arc-state
     "state": [
         "uv",
         "huggingface_hub",
+        "llvmlite>=0.46.0",
+        "numba>=0.60.0",
     ],
     # Notebook cell 8: pip(scGPT git HEAD); pip("huggingface_hub","scanpy","anndata")
     # NOTE: scGPT is NOT on PyPI as a stable release — installed from git HEAD
     # inside run_eval().  Pre-installing aux deps only here.
     "scgpt": [
         "huggingface_hub",
+        "llvmlite>=0.46.0",
+        "numba>=0.60.0",
         "scanpy",
         "anndata",
     ],
@@ -87,6 +93,8 @@ DEFAULT_MODEL_REQUIREMENTS: dict[str, list[str]] = {
         "accelerate>=0.34.0",
         "bitsandbytes>=0.43.0",
         "cell2sentence==1.1.0",
+        "llvmlite>=0.46.0",
+        "numba>=0.60.0",
     ],
     # Notebook cell 12: pip("anndata>=0.10.0,<0.13.0"); pip("scanpy>=1.10.0,<1.11.0");
     #                   pip("scvi-tools>=1.0.0,<1.5.0"); pip("lightning>=2.2.0,<2.4.0");

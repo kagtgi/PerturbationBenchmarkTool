@@ -32,14 +32,20 @@ MODEL_REQUIREMENTS: dict[str, list[str]] = {
     "gears": [
         "torch_geometric",
         "cell-gears",
+        "llvmlite>=0.46.0",
+        "numba>=0.60.0",
         "scanpy",
     ],
     "state": [
         "uv",
         "huggingface_hub",
+        "llvmlite>=0.46.0",
+        "numba>=0.60.0",
     ],
     "scgpt": [
         "huggingface_hub",
+        "llvmlite>=0.46.0",
+        "numba>=0.60.0",
         "scanpy",
         "anndata",
     ],
@@ -48,6 +54,8 @@ MODEL_REQUIREMENTS: dict[str, list[str]] = {
         "accelerate>=0.34.0",
         "bitsandbytes>=0.43.0",
         "cell2sentence==1.1.0",
+        "llvmlite>=0.46.0",
+        "numba>=0.60.0",
     ],
     "cpa": [
         "anndata>=0.10.0,<0.13.0",
