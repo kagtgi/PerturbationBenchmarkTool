@@ -603,7 +603,17 @@ def run(
     
     logger.info(f"✅ Data ready: {adata_sub.shape}")
     
-    # Save subsampled data for subprocess access
+    # Save subsampled data for subprocess access.
+    # Convert nullable string columns (pd.StringDtype / pd.ArrowDtype) to plain
+    # object dtype so write_h5ad succeeds regardless of the anndata version
+    # (anndata ≥ 0.11 rejects nullable strings without allow_write_nullable_strings).
+    import pandas as _pd
+    for _col in adata_sub.obs.columns:
+        if isinstance(adata_sub.obs[_col].dtype, _pd.StringDtype) or (
+            hasattr(_pd, "ArrowDtype")
+            and isinstance(adata_sub.obs[_col].dtype, _pd.ArrowDtype)
+        ):
+            adata_sub.obs[_col] = adata_sub.obs[_col].astype(object)
     temp_data_path = os.path.join(output_dir, "temp_subsampled.h5ad")
     adata_sub.write_h5ad(temp_data_path)
     logger.info(f"💾 Subsampled data saved to: {temp_data_path}")
