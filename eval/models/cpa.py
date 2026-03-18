@@ -1177,14 +1177,19 @@ def run_eval(adata=None, cfg=None):
         Evaluation results with metrics and runtime.
     """
     t_start = time.time()
-    
+
+    # Resolve CTRL_LABEL from cfg (or fall back to module-level default).
+    # Must be done before any assignment to a local with the same name to
+    # avoid Python's UnboundLocalError caused by scoping rules.
+    ctrl_label = (cfg.get("CTRL_LABEL", CTRL_LABEL) if cfg else CTRL_LABEL)
+
     # Load data if not provided
     if adata is None:
         import scanpy as sc
         adata = sc.read_h5ad(DATA_PATH)
-    
+
     rng = np.random.default_rng(SEED)
-    
+
     # Execute pipeline
     _clone_cpa()
     _install_dependencies()
@@ -1192,16 +1197,16 @@ def run_eval(adata=None, cfg=None):
     _patch_scvi()
     _install_jax_stub()
     _patch_cpa_source()
-    
+
     cpa, sc, sp, cdist, r2_score, tqdm = _import_cpa()
     sd, ckpt_var_names, attr, pert_encoder, arch = _load_checkpoint()
     ensembl_to_symbol = _reconcile_genes(adata, ckpt_var_names, sc)
-    adata, CTRL_LABEL = _prepare_data(adata, ckpt_var_names, pert_encoder, ensembl_to_symbol, rng, SEED, SUBSAMPLE, CTRL_LABEL)
-    adata = _compute_degs(adata, CTRL_LABEL, TOP_K_DE, SEED, sc, sp, np)
-    model, CTRL_LABEL = _setup_model(adata, cpa, sd, attr, arch, sp, np, torch)
-    adata = _run_predictions(model, adata, rng, sp, np, torch, CTRL_LABEL)
-    ctrl_mu, _real_gene_idx = _compute_r2_metrics(adata, CTRL_LABEL, sp, np, r2_score, tqdm)
-    df, P = _compute_3tier_metrics(adata, CTRL_LABEL, ctrl_mu, _real_gene_idx, TOP_K_DE, MAX_EVAL_PERTS, 
+    adata, ctrl_label = _prepare_data(adata, ckpt_var_names, pert_encoder, ensembl_to_symbol, rng, SEED, SUBSAMPLE, ctrl_label)
+    adata = _compute_degs(adata, ctrl_label, TOP_K_DE, SEED, sc, sp, np)
+    model, ctrl_label = _setup_model(adata, cpa, sd, attr, arch, sp, np, torch)
+    adata = _run_predictions(model, adata, rng, sp, np, torch, ctrl_label)
+    ctrl_mu, _real_gene_idx = _compute_r2_metrics(adata, ctrl_label, sp, np, r2_score, tqdm)
+    df, P = _compute_3tier_metrics(adata, ctrl_label, ctrl_mu, _real_gene_idx, TOP_K_DE, MAX_EVAL_PERTS,
                                    sp, np, cdist, tqdm, torch)
     _print_results(df, P, SUBSAMPLE, TOP_K_DE, ensembl_to_symbol, ckpt_var_names)
     

@@ -112,6 +112,18 @@ def run_eval(adata, cfg: dict) -> dict:
     raw_path = "_state_raw.h5ad"
     pre_path = "_state_preprocessed.h5ad"
     pred_path = "_state_predicted.h5ad"
+
+    # anndata refuses to write pd.StringDtype / ArrowStringDtype columns unless
+    # allow_write_nullable_strings is set.  Convert them to plain object dtype
+    # here so the write succeeds regardless of the anndata version.
+    import pandas as _pd
+    for _col in adata.obs.columns:
+        if isinstance(adata.obs[_col].dtype, _pd.StringDtype) or (
+            hasattr(_pd, "ArrowDtype")
+            and isinstance(adata.obs[_col].dtype, _pd.ArrowDtype)
+        ):
+            adata.obs[_col] = adata.obs[_col].astype(object)
+
     adata.write_h5ad(raw_path)
 
     # --- Install & download ------------------------------------------------
