@@ -193,9 +193,10 @@ def run_eval(adata, cfg: dict) -> dict:
         adata.obs["perturbation"] = adata.obs[pert_col].astype(str)
     pert_key = "perturbation"
 
-    # Filter: >=5 cells per perturbation
+    # Filter: minimum cells per perturbation (consistent with rest of pipeline)
+    min_cells = cfg.get("MIN_CELLS_PER_PERT", config.MIN_CELLS_PER_PERT)
     vc = adata.obs[pert_key].value_counts()
-    adata = adata[adata.obs[pert_key].isin(vc[vc >= 5].index)].copy()
+    adata = adata[adata.obs[pert_key].isin(vc[vc >= min_cells].index)].copy()
 
     # Select TOP perturbations by cell count
     pert_counts = adata.obs[pert_key].value_counts()
@@ -313,9 +314,10 @@ def run_eval(adata, cfg: dict) -> dict:
     logger.info("  Reconstructing sentence → matrix...")
     recon_start = time.time()
 
-    # vocab_list / vocab_set use gene symbols (consistent with template above)
+    # vocab_list / vocab_set / vocab_dict use gene symbols (consistent with template above)
     vocab_list = var_symbols
     vocab_set = set(vocab_list)
+    vocab_dict = {g: i for i, g in enumerate(vocab_list)}   # O(1) lookup
     adata.layers["X_true"] = adata.X.copy()
     pred_X_list = []
 
@@ -328,7 +330,7 @@ def run_eval(adata, cfg: dict) -> dict:
         genes = [g.strip() for g in sentence.split() if g.strip() in vocab_set][:TOP_K_GENES]
         expr = np.zeros(adata.n_vars, dtype=np.float64)
         for rank, gene in enumerate(genes):
-            idx = vocab_list.index(gene)
+            idx = vocab_dict[gene]
             expr[idx] = 10 ** (slope * np.log10(1 + rank) + intercept)
         expr += rng.normal(0, 1e-6, size=expr.shape)
         pred_X_list.append(expr)

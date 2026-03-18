@@ -166,7 +166,7 @@ def run_eval(adata, cfg: dict) -> dict:
 
     true_X = np.array(true_adata.obsm["X_hvg"], dtype=np.float32)
     pred_X = np.array(pred_adata.obsm["X_hvg"], dtype=np.float32)
-    conditions = pred_adata.obs[pert_col].values
+    conditions = pred_adata.obs[pert_col].astype(str).values
 
     # --- Build centroids ---------------------------------------------------
     ctrl_mask = conditions == ctrl_label
