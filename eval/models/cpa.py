@@ -554,7 +554,7 @@ def _prepare_data(adata, ckpt_var_names, pert_encoder, ensembl_to_symbol, rng, S
             raise RuntimeError("ZERO genes mapped after conversion. Check STEP 9 output.")
         
         import anndata as _ad
-        adata = _ad.AnnData(X=sp.csr_matrix(X_full), obs=adata.obs.copy(), var=pd.DataFrame(index=gene_list))
+        adata = _ad.AnnData(X=X_full, obs=adata.obs.copy(), var=pd.DataFrame(index=gene_list))
         print(f"  Aligned to model genes: {adata.shape} ({n_mapped} non-zero)")
     
     # Perturbation column

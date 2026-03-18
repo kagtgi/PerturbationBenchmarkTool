@@ -124,6 +124,8 @@ def run_eval(adata, cfg: dict) -> dict:
         ):
             adata.obs[_col] = adata.obs[_col].astype(object)
 
+    import anndata as _anndata
+    _anndata.settings.allow_write_nullable_strings = True
     adata.write_h5ad(raw_path)
 
     # --- Install & download ------------------------------------------------
