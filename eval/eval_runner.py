@@ -88,17 +88,27 @@ DEFAULT_MODEL_REQUIREMENTS: dict[str, list[str]] = {
     ],
     # Notebook cell 10: pip("transformers>=4.45.0","accelerate>=0.34.0","bitsandbytes>=0.43.0")
     #                   pip("cell2sentence==1.1.0","anndata>=0.10.0","scanpy>=1.10.0")
+    #                   pip("scikit-learn","pandas","scipy","tqdm")
+    # NOTE: anndata/scanpy version constraints must be listed here because
+    # cell2sentence.py's module-level imports (scipy, sklearn, tqdm) are satisfied
+    # by scanpy's transitive deps; explicit pre-seeding ensures the right versions.
     "cell2sentence": [
         "transformers>=4.45.0",
         "accelerate>=0.34.0",
         "bitsandbytes>=0.43.0",
         "cell2sentence==1.1.0",
+        "anndata>=0.10.0",
+        "scanpy>=1.10.0",
         "llvmlite>=0.46.0",
         "numba>=0.60.0",
     ],
     # Notebook cell 12: pip("anndata>=0.10.0,<0.13.0"); pip("scanpy>=1.10.0,<1.11.0");
     #                   pip("scvi-tools>=1.0.0,<1.5.0"); pip("lightning>=2.2.0,<2.4.0");
     #                   pip("pytorch-lightning>=2.2.0,<2.4.0"); pip("gdown"); pip("pybiomart")
+    #                   pip("rdkit","adjustText","seaborn")
+    # IMPORTANT: CPA runs 4th in SAFE_RUN_ORDER. It DOWNGRADES anndata to <0.13.0
+    # and scanpy to <1.11.0 in the shared site-packages. STATE (5th) is unaffected
+    # because arc-state runs in uv's own isolated tool environment.
     "cpa": [
         "anndata>=0.10.0,<0.13.0",
         "llvmlite>=0.46.0",
@@ -109,6 +119,9 @@ DEFAULT_MODEL_REQUIREMENTS: dict[str, list[str]] = {
         "pytorch-lightning>=2.2.0,<2.4.0",
         "gdown",
         "pybiomart",
+        "rdkit",
+        "adjustText",
+        "seaborn",
     ],
 }
 
@@ -132,12 +145,15 @@ KNOWN_CONFLICTS: dict[tuple[str, str], str] = {
     ("scgpt", "cell2sentence"): "scGPT uses torchtext stub; C2S needs transformers>=4.45.0",
 }
 
-# Safe run order for non-isolated (in-process) mode:
-#   1. GEARS  — minimal deps; no sys.modules side-effects
-#   2. scGPT  — injects torchtext stub (harmless for subsequent models)
-#   3. C2S    — upgrades transformers; OK after scGPT
-#   4. CPA    — pins anndata/scanpy; clears its own module cache internally
-#   5. STATE  — MUST be last: arc-state evicts scipy/anndata/scanpy on install
+# Safe run order (applied in BOTH isolated and non-isolated mode):
+#   1. GEARS         — minimal deps; no version pins; no sys.modules side-effects
+#   2. scGPT         — injects torchtext stub; installs scGPT from git HEAD
+#   3. cell2sentence — upgrades transformers>=4.45.0; anndata/scanpy unconstrained
+#   4. CPA           — DOWNGRADES anndata<0.13.0 and scanpy<1.11.0 in shared
+#                      site-packages; must run after models with no upper bound
+#   5. STATE         — MUST be last: arc-state runs in uv's own isolated env
+#                      (unaffected by CPA's downgrade); in-process mode: arc-state
+#                      install also evicts scipy/anndata/scanpy from sys.modules
 SAFE_RUN_ORDER: list[str] = ["gears", "scgpt", "cell2sentence", "cpa", "state"]
 
 # Timeout per model in minutes
@@ -551,22 +567,28 @@ def run(
     os.makedirs(output_dir, exist_ok=True)
 
     # -----------------------------------------------------------------------
-    # Non-isolated mode: enforce safe run order and warn about conflicts.
-    # In subprocess isolation mode every model runs in its own Python process
-    # so conflicts are automatically avoided — no reordering needed.
+    # Always enforce SAFE_RUN_ORDER.
+    #
+    # In BOTH isolated and non-isolated mode the models share the same
+    # site-packages directory.  CPA (step 4) pins anndata<0.13.0 and
+    # scanpy<1.11.0 with --upgrade, which downgrades those packages for all
+    # subsequent subprocesses.  Running CPA 4th (before STATE which uses
+    # arc-state's own uv-isolated env) avoids any impact on other models.
+    #
+    # In non-isolated (in-process) mode the order also prevents sys.modules
+    # conflicts (torchtext stub, JAX stubs, module eviction, etc.).
     # -----------------------------------------------------------------------
-    if not isolate:
-        # Reorder models to match SAFE_RUN_ORDER
-        ordered = [m for m in SAFE_RUN_ORDER if m in models]
-        ordered += [m for m in models if m not in SAFE_RUN_ORDER]
-        if ordered != models:
-            logger.warning(
-                "Non-isolated mode: reordering models to safe execution order: %s",
-                " → ".join(ordered),
-            )
-        models = ordered
+    ordered = [m for m in SAFE_RUN_ORDER if m in models]
+    ordered += [m for m in models if m not in SAFE_RUN_ORDER]
+    if ordered != models:
+        logger.info(
+            "Reordering models to safe execution order: %s",
+            " → ".join(ordered),
+        )
+    models = ordered
 
-        # Warn about known conflicts
+    if not isolate:
+        # Warn about known in-process conflicts
         active = set(models)
         conflicts_found = []
         for (a, b), reason in KNOWN_CONFLICTS.items():
