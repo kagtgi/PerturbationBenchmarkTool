@@ -1,42 +1,49 @@
-# =============================================================================
-# CPA K562 — FINAL PRODUCTION PIPELINE (v8.0 — SENIOR ENGINEER AUDITED)
-#
-# Based on: https://github.com/theislab/cpa
-# All Steps 1-16 included for complete reproducibility
-# Fixed: scvi-tools _types.py Union type, JAX stub, gene reconciliation
-# =============================================================================
-import subprocess
-import sys
+"""
+CPA evaluation — pretrained Kang (K562) model zero-shot inference.
+
+Runs the full 16-step CPA pipeline: clones the repo, patches scvi-tools
+and JAX stubs, reconciles gene names, runs predictions, and computes
+standard 3-tier metrics.
+
+Notebook reference: Eval_.ipynb cell 12 (CPA EVALUATION).
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import logging
 import os
 import re
 import shutil
-import importlib.util
-import warnings
-import json
+import subprocess
+import sys
+import time
 import types
 import urllib.request
-import time
+import warnings
 from collections import defaultdict
 from typing import Union
 
 import numpy as np
-import torch
 import pandas as pd
 import scipy.sparse as sp
+import torch
+
+from .. import config
+
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 CPA_DIR = "/tmp/theislab_cpa"
-PRETRAINED_PT = os.path.join("./pretrained_cpa_k562", "k562_model.pt")
 MODEL_DIR = "./pretrained_cpa_k562"
-DATA_PATH = "/content/K562.h5ad"
-CTRL_LABEL = "non-targeting"
-SEED = 42
-TOP_K_DE = 50
+PRETRAINED_PT = os.path.join(MODEL_DIR, "k562_model.pt")
+KANG_MODEL_ID = "1IVDsxkCZZlU5MCyiu0MKyAwzeEd_yV4B"
+# Defaults (overridden by cfg at runtime)
 SUBSAMPLE = 0.20
 MAX_EVAL_PERTS = 100
-KANG_MODEL_ID = "1IVDsxkCZZlU5MCyiu0MKyAwzeEd_yV4B"
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -1161,35 +1168,34 @@ def _print_results(df, P, SUBSAMPLE, TOP_K_DE, ensembl_to_symbol, ckpt_var_names
 # =============================================================================
 # MAIN ENTRY POINT
 # =============================================================================
-def run_eval(adata=None, cfg=None):
-    """
-    Run CPA evaluation pipeline.
-    
+def run_eval(adata=None, cfg: dict | None = None) -> dict:
+    """Run CPA evaluation pipeline.
+
     Parameters
     ----------
     adata : AnnData, optional
-        Input data. If None, loads from DATA_PATH.
+        Input data. If None, loads from ``config.DATA_PATH``.
     cfg : dict, optional
-        Configuration overrides.
-    
+        Runtime configuration (see ``eval.config``).
+
     Returns
     -------
-    dict
-        Evaluation results with metrics and runtime.
+    dict with ``model``, ``metrics``, ``pert_names``, ``runtime_seconds``.
     """
     t_start = time.time()
+    cfg = cfg or {}
 
-    # Resolve CTRL_LABEL from cfg (or fall back to module-level default).
-    # Must be done before any assignment to a local with the same name to
-    # avoid Python's UnboundLocalError caused by scoping rules.
-    ctrl_label = (cfg.get("CTRL_LABEL", CTRL_LABEL) if cfg else CTRL_LABEL)
+    ctrl_label   = cfg.get("CTRL_LABEL",    config.CTRL_LABEL)
+    seed         = cfg.get("RANDOM_SEED",   config.RANDOM_SEED)
+    top_k_de     = cfg.get("TOP_K_DE",      config.TOP_K_DE)
+    subsample    = cfg.get("SUBSAMPLE_FRAC", SUBSAMPLE)
+    max_eval_p   = cfg.get("MAX_EVAL_PERTS", MAX_EVAL_PERTS)
 
-    # Load data if not provided
     if adata is None:
         import scanpy as sc
-        adata = sc.read_h5ad(DATA_PATH)
+        adata = sc.read_h5ad(cfg.get("DATA_PATH", config.DATA_PATH))
 
-    rng = np.random.default_rng(SEED)
+    rng = np.random.default_rng(seed)
 
     # Execute pipeline
     _clone_cpa()
@@ -1202,26 +1208,57 @@ def run_eval(adata=None, cfg=None):
     cpa, sc, sp, cdist, r2_score, tqdm = _import_cpa()
     sd, ckpt_var_names, attr, pert_encoder, arch = _load_checkpoint()
     ensembl_to_symbol = _reconcile_genes(adata, ckpt_var_names, sc)
-    adata, ctrl_label = _prepare_data(adata, ckpt_var_names, pert_encoder, ensembl_to_symbol, rng, SEED, SUBSAMPLE, ctrl_label)
-    adata = _compute_degs(adata, ctrl_label, TOP_K_DE, SEED, sc, sp, np)
+    adata, ctrl_label = _prepare_data(
+        adata, ckpt_var_names, pert_encoder, ensembl_to_symbol,
+        rng, seed, subsample, ctrl_label,
+    )
+    adata = _compute_degs(adata, ctrl_label, top_k_de, seed, sc, sp, np)
     model, ctrl_label = _setup_model(adata, cpa, sd, attr, arch, sp, np, torch)
     adata = _run_predictions(model, adata, rng, sp, np, torch, ctrl_label)
     ctrl_mu, _real_gene_idx = _compute_r2_metrics(adata, ctrl_label, sp, np, r2_score, tqdm)
-    df, P = _compute_3tier_metrics(adata, ctrl_label, ctrl_mu, _real_gene_idx, TOP_K_DE, MAX_EVAL_PERTS,
-                                   sp, np, cdist, tqdm, torch)
-    _print_results(df, P, SUBSAMPLE, TOP_K_DE, ensembl_to_symbol, ckpt_var_names)
-    
+    df, P = _compute_3tier_metrics(
+        adata, ctrl_label, ctrl_mu, _real_gene_idx,
+        top_k_de, max_eval_p, sp, np, cdist, tqdm, torch,
+    )
+    _print_results(df, P, subsample, top_k_de, ensembl_to_symbol, ckpt_var_names)
+
     runtime = time.time() - t_start
-    
-    # Cleanup
+
     del model
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    
+
+    # Aggregate per-perturbation df into standard flat metrics dict
+    def _mean(col):
+        return float(df[col].mean()) if (len(df) > 0 and col in df.columns) else float("nan")
+
+    metrics = {
+        "T1_Centroid_Accuracy":      _mean("T1_CA"),
+        "T1_Profile_Distance_Score": _mean("T1_PDS"),
+        "T1_Systema_Pearson_Delta":  _mean("T1_PR"),
+        "T2_Directional_Accuracy":   _mean("T2_DA"),
+        "T2_Pearson_Delta_TopK":     _mean("T2_PRde"),
+        "T2_Jaccard_TopK":           _mean("T2_JC"),
+        "T3_Energy_Distance":        _mean("T3_EN"),
+        "T3_MMD_RBF":                _mean("T3_MM"),
+    }
+
+    logger.info(
+        "CPA done: CA=%.4f  PDS=%.4f  DirAcc=%.4f  "
+        "PearsonDE=%.4f  Energy=%.4f  MMD=%.4f  (%.2f min)",
+        metrics["T1_Centroid_Accuracy"],
+        metrics["T1_Profile_Distance_Score"],
+        metrics["T2_Directional_Accuracy"],
+        metrics["T2_Pearson_Delta_TopK"],
+        metrics["T3_Energy_Distance"],
+        metrics["T3_MMD_RBF"],
+        runtime / 60,
+    )
+
     return {
-        "model": "CPA",
-        "metrics": df.to_dict() if len(df) > 0 else {},
-        "pert_names": df["condition"].tolist() if len(df) > 0 else [],
+        "model":           "CPA",
+        "metrics":         metrics,
+        "pert_names":      df["condition"].tolist() if len(df) > 0 else [],
         "runtime_seconds": runtime,
     }
 

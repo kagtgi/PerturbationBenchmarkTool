@@ -160,7 +160,7 @@ def run_eval(adata, cfg: dict) -> dict:
     seed = cfg.get("RANDOM_SEED", config.RANDOM_SEED)
     ctrl_label = cfg.get("CTRL_LABEL", config.CTRL_LABEL)
     pert_col = cfg.get("PERT_COL", config.PERT_COL)
-    top_k_de = cfg.get("TOP_K_DE", 50)
+    top_k_de = cfg.get("TOP_K_DE", config.TOP_K_DE)
     max_t3 = cfg.get("MAX_T3_CELLS", config.MAX_T3_CELLS)
 
     logger.info("Cell2Sentence eval starting (python=%s cuda=%s model=%s)",
