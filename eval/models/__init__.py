@@ -54,6 +54,8 @@ MODEL_REQUIREMENTS: dict[str, list[str]] = {
         "accelerate>=0.34.0",
         "bitsandbytes>=0.43.0",
         "cell2sentence==1.1.0",
+        "anndata>=0.10.0",
+        "scanpy>=1.10.0",
         "llvmlite>=0.46.0",
         "numba>=0.60.0",
     ],
@@ -67,6 +69,9 @@ MODEL_REQUIREMENTS: dict[str, list[str]] = {
         "pytorch-lightning>=2.2.0,<2.4.0",
         "gdown",
         "pybiomart",
+        "rdkit",
+        "adjustText",
+        "seaborn",
     ],
 }
 
