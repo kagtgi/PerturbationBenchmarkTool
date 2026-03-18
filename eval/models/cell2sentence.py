@@ -39,11 +39,11 @@ logger = logging.getLogger(__name__)
 C2S_DIR = "/tmp/vandijklab_c2s"
 HF_MODEL = "vandijklab/C2S-Scale-Gemma-2-2B"
 TOP_K_GENES = 200
-MAX_NEW_TOKENS = 600
-MAX_PERTURBATIONS = 200   # match notebook (top-N perts by cell count)
-EVAL_SAMPLE_CELLS = 50    # match notebook (cells per pert for metrics)
-MAX_EVAL_PERTS = 100      # match notebook (cap for T3 distance matrix)
-MAX_CELLS_SAMPLE = 150    # match notebook (subsample for energy/MMD)
+MAX_NEW_TOKENS = 400      # reduced from 600; 200 genes × ~2 tokens/gene ≈ 400 tokens needed
+MAX_PERTURBATIONS = 120   # reduced from 200 (60% of inference calls → ~40% time saving)
+EVAL_SAMPLE_CELLS = 30    # reduced from 50
+MAX_EVAL_PERTS = 60       # reduced from 100
+MAX_CELLS_SAMPLE = 100    # reduced from 150 (subsample for energy/MMD)
 
 
 def _pip(*packages: str) -> None:
