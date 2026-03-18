@@ -407,6 +407,18 @@ def run_eval(adata, cfg: dict) -> dict:
         if g != ctrl_label and "+" not in g
     ]
 
+    # Pre-flight: verify pert gene names map into eval gene set (matches notebook)
+    _sample_perts = unique_perts[:20]
+    _in_eval = sum(1 for g in _sample_perts if obs_to_eval(g) in eval_gene_pos)
+    logger.info("Pre-flight: %d/%d sample perts found in eval gene set", _in_eval, len(_sample_perts))
+    if _in_eval == 0 and len(_sample_perts) > 0:
+        raise RuntimeError(
+            "None of the perturbation gene names appear in the eval gene set. "
+            f"Check pert_col='{pert_col}' and gene symbol resolution. "
+            f"Sample pert names: {_sample_perts[:5]}  "
+            f"Sample eval genes: {list(eval_gene_pos.keys())[:5]}"
+        )
+
     pred_centroids, true_centroids, pert_names = [], [], []
     energy_list, mmd_list = [], []
     max_t3 = cfg.get("MAX_T3_CELLS", config.MAX_T3_CELLS)

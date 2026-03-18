@@ -40,10 +40,10 @@ C2S_DIR = "/tmp/vandijklab_c2s"
 HF_MODEL = "vandijklab/C2S-Scale-Gemma-2-2B"
 TOP_K_GENES = 200
 MAX_NEW_TOKENS = 600
-MAX_PERTURBATIONS = 100   # reduced from 200 for faster eval
-EVAL_SAMPLE_CELLS = 25    # reduced from 50 for faster eval
-MAX_EVAL_PERTS = 50       # reduced from 100 for faster eval
-MAX_CELLS_SAMPLE = 256    # reduced from 512 for faster eval
+MAX_PERTURBATIONS = 200   # match notebook (top-N perts by cell count)
+EVAL_SAMPLE_CELLS = 50    # match notebook (cells per pert for metrics)
+MAX_EVAL_PERTS = 100      # match notebook (cap for T3 distance matrix)
+MAX_CELLS_SAMPLE = 150    # match notebook (subsample for energy/MMD)
 
 
 def _pip(*packages: str) -> None:
@@ -251,11 +251,24 @@ def run_eval(adata, cfg: dict) -> dict:
     load_end = time.time()
     logger.info(f"  ✅ Model loaded in {(load_end - load_start)/60:.2f} min")
 
+    # --- Build gene-symbol vocabulary for C2S ----------------------------------
+    # C2S was trained on sentences of HGNC gene symbols (e.g. "TP53 GAPDH …").
+    # If the dataset uses Ensembl IDs as var_names (common in Perturb-seq h5ads)
+    # the model would receive unrecognisable tokens and produce empty sentences.
+    # Detect this case and fall back to the gene_name column when available.
+    _var_names_sample = list(adata.var_names)[:20]
+    _uses_ensembl = any(str(v).startswith("ENSG") for v in _var_names_sample)
+    if _uses_ensembl and "gene_name" in adata.var.columns:
+        var_symbols = adata.var["gene_name"].astype(str).tolist()
+        logger.info("  var_names are Ensembl IDs — using adata.var['gene_name'] for C2S vocabulary.")
+    else:
+        var_symbols = list(adata.var_names)
+
     # --- Build control template --------------------------------------------
     ctrl_mask = adata.obs[pert_key] == ctrl_label
     ctrl_expr = adata[ctrl_mask].X.mean(axis=0).flatten()
     top_idx = np.argsort(-ctrl_expr)[:TOP_K_GENES]
-    template = " ".join(adata.var_names[i] for i in top_idx)
+    template = " ".join(var_symbols[i] for i in top_idx)
 
     # Power-law fit
     ranks = np.argsort(-ctrl_expr)[:TOP_K_GENES]
@@ -300,13 +313,14 @@ def run_eval(adata, cfg: dict) -> dict:
     logger.info("  Reconstructing sentence → matrix...")
     recon_start = time.time()
 
-    vocab_list = list(adata.var_names)
+    # vocab_list / vocab_set use gene symbols (consistent with template above)
+    vocab_list = var_symbols
     vocab_set = set(vocab_list)
     adata.layers["X_true"] = adata.X.copy()
     pred_X_list = []
 
     for i, row in enumerate(tqdm(adata.obs.itertuples(), desc="Reconstructing", total=adata.n_obs)):
-        cond = row.perturbation
+        cond = getattr(row, pert_key, None) or row.perturbation
         if cond == ctrl_label:
             pred_X_list.append(adata.X[i].copy())
             continue

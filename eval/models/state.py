@@ -128,6 +128,11 @@ def run_eval(adata, cfg: dict) -> dict:
 
     # --- Install & download ------------------------------------------------
     _install_dependencies()
+    # Re-import after eviction so we use the freshly-installed anndata/scanpy
+    # rather than the stale module objects that were evicted inside
+    # _install_dependencies().  Without this, arc-state's h5ad output could
+    # be read by an older anndata that may misinterpret new-format features.
+    import scanpy as sc  # noqa: F811
     model_dir, checkpoint = _download_model()
 
     # --- STATE preprocess --------------------------------------------------
