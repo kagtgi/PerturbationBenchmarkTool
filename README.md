@@ -1,32 +1,48 @@
 # Perturbation Prediction Benchmark Tool
 
-A reusable evaluation framework for benchmarking single-cell gene perturbation prediction models on Perturb-seq datasets stored as `.h5ad` files.
+A reusable evaluation framework for benchmarking single-cell gene perturbation
+prediction models on Perturb-seq datasets stored as `.h5ad` files.
+
+---
 
 ## Supported Models
 
-| Model | Type | Reference |
-|-------|------|-----------|
-| **GEARS** | Graph Auto-Regressive Learning | [Roohani et al. 2023](https://github.com/snap-stanford/GEARS) |
-| **scGPT** | Pre-trained Transformer | [Cui et al. 2024](https://github.com/bowang-lab/scGPT) |
-| **STATE** | Spatial Transcriptomics Transfer | [Arc Institute](https://huggingface.co/arcinstitute/ST-HVG-Replogle) |
-| **Cell2Sentence** | LLM-based (Gemma-2-2B) | [Van Dijk Lab](https://github.com/vandijklab/cell2sentence) |
-| **CPA** | Conditional Perturbation Autoencoder | [Lotfollahi et al. 2023](https://github.com/theislab/cpa) |
+| Model | Approach | GPU | ~Runtime | ~Disk |
+|-------|----------|-----|----------|-------|
+| **GEARS** | Graph neural network | Recommended | 10–20 min | 200 MB |
+| **scGPT** | Pre-trained Transformer | Recommended | 20–30 min | 500 MB |
+| **STATE** | Foundation model (HVG) | Recommended | 15–25 min | 1 GB |
+| **Cell2Sentence** | LLM-based (Gemma-2-2B) | **Required** | 60–90 min | 10 GB |
+| **CPA** | Conditional Perturbation Autoencoder | Recommended | 20–30 min | 300 MB |
+
+> **First run**: each model downloads pretrained weights automatically.
+> Total disk for all five: ~12 GB. Internet access is required.
+
+---
 
 ## Evaluation Metrics (3 Tiers)
 
 ### Tier 1 — Whole-Profile Identity
-- **Centroid Accuracy (CA)** ↑ — Is the predicted profile closest to the correct perturbation?
-- **Profile Distance Score (PDS)** ↓ — Relative distance ranking among all perturbations.
-- **Systema Pearson Delta** ↑ — Genome-wide correlation of expression changes.
+| Metric | Direction | Description |
+|--------|-----------|-------------|
+| Centroid Accuracy (CA) | ↑ higher | Predicted centroid closest to correct perturbation |
+| Profile Distance Score (PDS) | ↓ lower | Relative distance ranking among all perturbations |
+| Systema Pearson Delta | ↑ higher | Genome-wide correlation of expression changes |
 
 ### Tier 2 — Differentially Expressed Gene Accuracy
-- **Directional Accuracy** ↑ — Proportion of DE genes with correct up/down direction.
-- **Pearson Delta Top-K** ↑ — Correlation of top-K DE gene expression changes.
-- **Jaccard DE Top-K** ↑ — Overlap of predicted vs observed top-K DE gene sets.
+| Metric | Direction | Description |
+|--------|-----------|-------------|
+| Directional Accuracy | ↑ higher | Fraction of DE genes with correct up/down direction |
+| Pearson Delta Top-K | ↑ higher | Correlation of top-K DE gene expression changes |
+| Jaccard DE Top-K | ↑ higher | Overlap of predicted vs observed top-K DE gene sets |
 
 ### Tier 3 — Distributional Fidelity
-- **Energy Distance** ↓ — Statistical distance between predicted and observed cell distributions.
-- **MMD (RBF kernel)** ↓ — Kernel-based distributional divergence.
+| Metric | Direction | Description |
+|--------|-----------|-------------|
+| Energy Distance | ↓ lower | Statistical distance between predicted/observed distributions |
+| MMD (RBF kernel) | ↓ lower | Kernel-based distributional divergence |
+
+---
 
 ## Repository Structure
 
@@ -35,47 +51,64 @@ A reusable evaluation framework for benchmarking single-cell gene perturbation p
 ├── Eval_.ipynb                  # Original monolithic notebook (reference)
 └── eval/
     ├── __init__.py
-    ├── __main__.py              # python -m eval
+    ├── __main__.py              # python -m eval entry point
     ├── config.py                # All configuration parameters
     ├── dataset.py               # .h5ad loading and preprocessing
     ├── sampling.py              # Centralized stratified subsampling
     ├── metrics.py               # Unified T1/T2/T3 metric functions
-    ├── eval_runner.py           # Main orchestrator
+    ├── eval_runner.py           # Main orchestrator (subprocess isolation)
     ├── collect_results.py       # Result aggregation and display
     ├── models/
-    │   ├── __init__.py          # Model registry
-    │   ├── gears.py             # GEARS evaluator
-    │   ├── scgpt.py             # scGPT evaluator
-    │   ├── state.py             # STATE evaluator
-    │   ├── cell2sentence.py     # Cell2Sentence evaluator
-    │   └── cpa.py               # CPA evaluator
+    │   ├── __init__.py          # Model registry + per-model requirements
+    │   ├── gears.py
+    │   ├── scgpt.py
+    │   ├── state.py
+    │   ├── cell2sentence.py
+    │   └── cpa.py
     ├── notebooks/
-    │   └── tutorial.ipynb       # Step-by-step tutorial
+    │   └── tutorial.ipynb       # Step-by-step Colab tutorial
     └── results/                 # Output directory (created at runtime)
 ```
 
+---
+
 ## Quick Start
 
-### 1. Install base dependencies
+### 1. Prerequisites
+
+```
+Python ≥ 3.10
+PyTorch (any recent version, CUDA build recommended)
+git  (required — CPA and Cell2Sentence clone their repos on first run)
+```
+
+### 2. Install base dependencies
 
 ```bash
 pip install anndata scanpy scipy pandas matplotlib torch
 ```
 
-### 2. Set your dataset path
+Model-specific packages (transformers, scvi-tools, torch-geometric, etc.) are
+**installed automatically** the first time each model runs.
+
+### 3. Configure your dataset
 
 Edit `eval/config.py`:
 
 ```python
-DATA_PATH = "/path/to/your/dataset.h5ad"
-DEVICE = "cuda"   # or "cpu"
+DATA_PATH  = "/path/to/your/dataset.h5ad"
+DEVICE     = "cuda"               # or "cpu"
+CTRL_LABEL = "non-targeting"      # obs label for control cells
+PERT_COL   = "gene"               # obs column holding perturbation names
 ```
 
-### 3. Run evaluation
+Or pass `--data` on the CLI — no file edit required.
 
-**All models:**
+### 4. Run evaluation
+
+**All models (recommended):**
 ```bash
-python -m eval --data /path/to/dataset.h5ad --models all
+python -m eval --data K562.h5ad --models all
 ```
 
 **Specific models:**
@@ -83,46 +116,58 @@ python -m eval --data /path/to/dataset.h5ad --models all
 python -m eval --data K562.h5ad --models gears scgpt state
 ```
 
-**With custom settings:**
+**Custom timeout or output directory:**
 ```bash
-python -m eval --data K562.h5ad --models gears --device cpu --seed 42 --output my_results/
+python -m eval --data K562.h5ad --models all \
+    --device cuda --seed 42 \
+    --output my_results/ --timeout 120
 ```
 
-### 4. Collect results
+### 5. Collect and compare results
 
 ```bash
 python -m eval.collect_results --results-dir results/
 ```
 
-## Tutorial Notebook
+Produces a formatted comparison table plus `results/summary.csv`.
 
-For a guided walkthrough, open `eval/notebooks/tutorial.ipynb` in Jupyter or Google Colab.
+---
 
-The tutorial covers:
-1. Installing dependencies
-2. Configuring dataset path and device
-3. Loading and subsampling data
-4. Running individual model evaluations
-5. Collecting and comparing results
-6. Interpreting the 3-tier metrics
+## Library Isolation & Run Order
 
-## Fair Comparison Guarantees
+Each model runs in its own **subprocess** (the default). This means:
 
-The framework ensures fair comparison across all models through:
+- No library conflicts between models — each subprocess installs its own
+  version-pinned dependencies independently.
+- No Python runtime restart needed between models.
+- CPA pins strict versions (`anndata<0.13.0`, `scanpy<1.11.0`) that modify
+  the shared site-packages. The runner always executes models in the safe order
+  `gears → scgpt → cell2sentence → cpa → state`, so CPA's pins only affect
+  STATE — which uses its own `uv`-isolated environment and is unaffected.
 
-- **Identical sampling**: All models evaluate on the exact same subsampled cells via centralized `sampling.py` with a fixed random seed.
-- **Identical preprocessing**: Raw counts are preserved and each model applies its own normalization consistently.
-- **Identical metrics**: All models are scored with the same metric implementations from `metrics.py`.
-- **Reproducibility**: Fixed random seeds at every stochastic step.
+To run all models in the **same process** (faster, no subprocess overhead,
+but may hit library conflicts):
 
-## Using Your Own Dataset
+```bash
+python -m eval --data K562.h5ad --models all --no-isolate
+```
 
-The only requirement is an `.h5ad` file with:
-- **`adata.X`**: Expression matrix (raw counts or log-normalized)
-- **`adata.obs['gene']`**: Perturbation labels (column name configurable via `PERT_COL`)
-- A control label value (default: `"non-targeting"`, configurable via `CTRL_LABEL`)
+---
 
-Change `config.DATA_PATH` and run — no other code changes needed.
+## Dataset Requirements
+
+Your `.h5ad` file must have:
+
+| Field | Default key | Description |
+|-------|------------|-------------|
+| `adata.X` | — | Expression matrix (raw counts preferred) |
+| `adata.obs[PERT_COL]` | `"gene"` | Perturbation label per cell |
+| Control value | `"non-targeting"` | Value in `PERT_COL` for control cells |
+
+Set `PERT_COL` and `CTRL_LABEL` in `config.py` to match your data.
+No other changes are needed.
+
+---
 
 ## Programmatic API
 
@@ -130,50 +175,76 @@ Change `config.DATA_PATH` and run — no other code changes needed.
 from eval.eval_runner import run
 
 results = run(
-    data_path="my_data.h5ad",
-    models=["gears", "scgpt"],
+    data_path="K562.h5ad",
+    models=["gears", "scgpt", "cpa"],   # or None for all
     device="cuda",
     seed=42,
     output_dir="my_results/",
+    isolate=True,                        # default, recommended
 )
 
 for r in results:
-    print(f"{r['model']}: CA={r['metrics']['T1_Centroid_Accuracy']:.4f}")
+    if r.get("status") == "success":
+        ca  = r["metrics"]["T1_Centroid_Accuracy"]
+        pds = r["metrics"]["T1_Profile_Distance_Score"]
+        print(f"{r['model']:20s}  CA={ca:.4f}  PDS={pds:.4f}")
 ```
+
+Collect results programmatically:
+
+```python
+from eval.collect_results import collect, pretty_table
+
+df = collect("my_results/")
+print(pretty_table(df))
+df.to_csv("comparison.csv", index=False)
+```
+
+---
 
 ## Debugging Failed Runs
 
-If one or more models fail, the runner prints errors automatically. You can also inspect them manually:
+Errors and tracebacks are printed automatically at the end of a run.
+For manual inspection:
 
 ```python
 from eval.eval_runner import print_errors, print_logs
 
-# Show error message + traceback for each failed model
-print_errors()                 # default output_dir from config
-print_errors("my_results/")   # explicit path
+# Error message + traceback for every failed model:
+print_errors("results/")
 
-# Show full subprocess output (stdout + stderr, streamed line-by-line)
-print_logs()                   # all models
-print_logs(model="gears")      # single model
+# Full subprocess stdout/stderr log for one model:
+print_logs("results/", model="gears")
+
+# Logs for all models:
+print_logs("results/")
 ```
 
-Log files are saved to `{output_dir}/{model_name}_log.txt`.
-Result JSON (including traceback) to `{output_dir}/{model_name}_results.json`.
+Log files: `results/{model}_log.txt`
+Result JSON (including traceback on failure): `results/{model}_results.json`
 
 ### Common Issues
 
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| All models fail in < 5 seconds | Python path misconfiguration | Run from the repo root directory |
-| `ModuleNotFoundError: No module named 'eval'` | Not running from project root | `cd PerturbationBenchmarkTool` before running |
-| `CUDA not available` for Cell2Sentence | Cell2Sentence requires GPU | Use a CUDA-enabled machine or skip `cell2sentence` |
-| `No results file generated` | Subprocess crashed at import | Check `{model}_log.txt` for the stack trace |
-| `Gene overlap = 0` for CPA | Control label mismatch | Ensure `CTRL_LABEL` in `config.py` matches your data |
+| Symptom | Likely Cause | Fix |
+|---------|-------------|-----|
+| All models fail in < 5 s | Wrong working directory | `cd PerturbationBenchmarkTool` before running |
+| `ModuleNotFoundError: No module named 'eval'` | Not in project root | See above |
+| `CUDA not available` / Cell2Sentence fails | GPU required for C2S | Use a CUDA runtime or skip `cell2sentence` |
+| `Gene overlap = 0` (CPA) | Control label mismatch | Set `CTRL_LABEL` in `config.py` to match your data |
+| `No results file generated` | Subprocess crashed at import | Check `{model}_log.txt` for the full traceback |
+| Model times out | Dataset too large or slow GPU | Increase `--timeout` or reduce `SUBSAMPLE_FRAC` in `config.py` |
+| STATE fails with `uv` not found | `uv` not installed | `pip install uv` or run once — STATE installs it automatically |
+| CPA fails with git error | `git` not installed | Install git: `apt install git` / `brew install git` |
 
-## Requirements
+---
 
-- Python ≥ 3.10
-- PyTorch (any recent version)
-- CUDA GPU recommended (required for Cell2Sentence)
-- Internet access (models download pretrained weights on first run)
-- ~20 GB disk space for all model checkpoints
+## Requirements Summary
+
+| Requirement | Notes |
+|-------------|-------|
+| Python ≥ 3.10 | |
+| PyTorch ≥ 2.0 | CUDA build strongly recommended |
+| CUDA GPU | Required for Cell2Sentence; recommended for all others |
+| `git` | CPA and Cell2Sentence clone repos on first run |
+| Internet access | All models download pretrained weights on first run |
+| ~12 GB disk | For all five model checkpoints combined |
