@@ -59,7 +59,9 @@ def stratified_subsample(
     rng = np.random.default_rng(seed)
     keep_idx: list[str] = []
 
-    obs_col = adata.obs[pert_col]
+    # Cast to plain str so Categorical columns don't carry stale categories
+    # and comparisons (obs_col == label) work correctly after h5ad round-trips.
+    obs_col = adata.obs[pert_col].astype(str)
     for label in obs_col.unique():
         grp_idx = adata.obs.index[obs_col == label]
         n = max(2, int(len(grp_idx) * frac))

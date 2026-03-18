@@ -297,10 +297,14 @@ result = {{
 
 try:
     import scanpy as sc
+    from eval.dataset import ensure_raw_counts
     from eval.models import run_model_eval
 
     logger.info("Loading data: {data_path}")
     adata = sc.read_h5ad("{data_path}")
+    # Mirror each notebook cell: ensure layers["counts"] exists and
+    # adata.X == raw counts before handing off to the model.
+    adata = ensure_raw_counts(adata)
 
     cfg = {json.dumps(cfg)}
 
@@ -630,12 +634,14 @@ def run(
     # object dtype so write_h5ad succeeds regardless of the anndata version
     # (anndata ≥ 0.11 rejects nullable strings without allow_write_nullable_strings).
     import pandas as _pd
+    import anndata as _ad
     for _col in adata_sub.obs.columns:
         if isinstance(adata_sub.obs[_col].dtype, _pd.StringDtype) or (
             hasattr(_pd, "ArrowDtype")
             and isinstance(adata_sub.obs[_col].dtype, _pd.ArrowDtype)
         ):
             adata_sub.obs[_col] = adata_sub.obs[_col].astype(object)
+    _ad.settings.allow_write_nullable_strings = True
     temp_data_path = os.path.join(output_dir, "temp_subsampled.h5ad")
     adata_sub.write_h5ad(temp_data_path)
     logger.info(f"💾 Subsampled data saved to: {temp_data_path}")
@@ -665,6 +671,7 @@ def run(
                         "TOP_K_DE": config.TOP_K_DE,
                         "MAX_T3_CELLS": config.MAX_T3_CELLS,
                         "MIN_CELLS_PER_PERT": config.MIN_CELLS_PER_PERT,
+                        "SUBSAMPLE_FRAC": config.SUBSAMPLE_FRAC,
                         "DIR_ACC_THRESHOLD": config.DIR_ACC_THRESHOLD,
                         "OUTPUT_DIR": output_dir,
                     },
@@ -685,6 +692,7 @@ def run(
                         "TOP_K_DE": config.TOP_K_DE,
                         "MAX_T3_CELLS": config.MAX_T3_CELLS,
                         "MIN_CELLS_PER_PERT": config.MIN_CELLS_PER_PERT,
+                        "SUBSAMPLE_FRAC": config.SUBSAMPLE_FRAC,
                         "DIR_ACC_THRESHOLD": config.DIR_ACC_THRESHOLD,
                         "OUTPUT_DIR": output_dir,
                     },
