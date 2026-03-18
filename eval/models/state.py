@@ -117,12 +117,21 @@ def run_eval(adata, cfg: dict) -> dict:
     # allow_write_nullable_strings is set.  Convert them to plain object dtype
     # here so the write succeeds regardless of the anndata version.
     import pandas as _pd
+
+    def _is_nullable_str(dtype) -> bool:
+        return isinstance(dtype, _pd.StringDtype) or (
+            hasattr(_pd, "ArrowDtype") and isinstance(dtype, _pd.ArrowDtype)
+        )
+
     for _col in adata.obs.columns:
-        if isinstance(adata.obs[_col].dtype, _pd.StringDtype) or (
-            hasattr(_pd, "ArrowDtype")
-            and isinstance(adata.obs[_col].dtype, _pd.ArrowDtype)
-        ):
+        if _is_nullable_str(adata.obs[_col].dtype):
             adata.obs[_col] = adata.obs[_col].astype(object)
+
+    # Also convert the obs index (e.g. cell_barcode) to plain object dtype so
+    # the state subprocess can write the preprocessed h5ad without hitting the
+    # allow_write_nullable_strings restriction.
+    if _is_nullable_str(adata.obs.index.dtype):
+        adata.obs.index = adata.obs.index.astype(object)
 
     import anndata as _anndata
     _anndata.settings.allow_write_nullable_strings = True
