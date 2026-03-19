@@ -238,6 +238,32 @@ Result JSON (including traceback on failure): `results/{model}_results.json`
 
 ---
 
+## Tutorial
+
+For an interactive walkthrough, visit the [tutorial notebook on Google Colab](https://colab.research.google.com/drive/1Ck5_uX4FRyrpno-fWF3vEX2dREcVFvOZ?usp=sharing).
+
+---
+
+## Example Output
+
+```
+Metric                                 Cell2Sentence          CPA        GEARS        scGPT        STATE  Dir
+--------------------------------------------------------------------
+Centroid Accuracy (CA)                       0.0167       0.0100       0.4998       0.5000       0.5033  up
+Profile Distance Score (PDS)                 0.4994       0.4995       0.4997       0.4998       0.4999  down
+Systema Pearson Delta                        0.1543       0.1546       0.0382       0.0578       0.0636  up
+Directional Accuracy                         0.5020       0.5509       0.5235       0.5835       0.5251  up
+Pearson Delta Top-K                          0.4057       0.2433       0.0613       0.1349       0.2595  up
+Jaccard DE Top-K                             0.0148       0.0358       0.0190       0.0720       0.0317  up
+Energy Distance                             87.2667      48.6083      24.6346      40.0196      34.4977  down
+MMD (RBF kernel)                             1.1086       0.5717       0.4670       1.0282       0.7345  down
+--------------------------------------------------------------------
+Runtime (seconds)                            3304.5        140.3        445.4        321.7        348.7
+========================================================================
+```
+
+---
+
 ## Requirements Summary
 
 | Requirement | Notes |
