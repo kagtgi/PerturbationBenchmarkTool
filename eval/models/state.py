@@ -127,11 +127,21 @@ def run_eval(adata, cfg: dict) -> dict:
         if _is_nullable_str(adata.obs[_col].dtype):
             adata.obs[_col] = adata.obs[_col].astype(object)
 
-    # Also convert the obs index (e.g. cell_barcode) to plain object dtype so
-    # the state subprocess can write the preprocessed h5ad without hitting the
-    # allow_write_nullable_strings restriction.
     if _is_nullable_str(adata.obs.index.dtype):
         adata.obs.index = adata.obs.index.astype(object)
+
+    # Also convert adata.var columns and index — the STATE CLI subprocess reads
+    # _state_raw.h5ad and writes _state_preprocessed.h5ad in a fresh process
+    # where anndata.settings.allow_write_nullable_strings defaults to False.
+    # If var retains nullable string columns (e.g. gene_id), that subprocess
+    # will raise RuntimeError when writing.  Convert them here so the raw h5ad
+    # contains only plain object-dtype string columns in both obs and var.
+    for _col in adata.var.columns:
+        if _is_nullable_str(adata.var[_col].dtype):
+            adata.var[_col] = adata.var[_col].astype(object)
+
+    if _is_nullable_str(adata.var.index.dtype):
+        adata.var.index = adata.var.index.astype(object)
 
     import anndata as _anndata
     _anndata.settings.allow_write_nullable_strings = True
